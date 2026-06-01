@@ -1,36 +1,45 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Chess Academy
+
+A chess coaching and training platform built with Next.js 16, React 19, and Stockfish 18.
+
+## Features
+
+| Route | Status |
+|-------|--------|
+| `/board` | ✅ Interactive analysis board with MultiPV engine, eval bar, variations, annotations |
+| `/analysis` | 🔄 Game Reviewer — Lichess-style move quality labels, accuracy scores, K-MAPS commentary |
+| `/puzzle-generator` | 📋 Planned |
+| `/position-trainer` | 📋 Planned |
+| (and more) | 📋 Planned |
 
 ## Getting Started
 
-First, run the development server:
-
 ```bash
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [http://localhost:3000](http://localhost:3000).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Engine Setup
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Stockfish 18 Lite (single-threaded WASM) is required:
 
-## Learn More
+1. Place `stockfish-18-lite-single.js` and `stockfish-18-lite-single.wasm` in `public/engine/`
+2. The files are loaded directly as a Web Worker — no additional config needed
 
-To learn more about Next.js, take a look at the following resources:
+## Opening Book (optional)
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+For book move detection in the Game Reviewer:
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+1. Download `gm2600.bin` (Polyglot format, GM 2600+ games)
+2. Place it at `public/books/gm2600.bin`
 
-## Deploy on Vercel
+Without the book file, the Game Reviewer falls back to an opening-phase heuristic.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Project Docs
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- [`BOARD_PLAN.md`](BOARD_PLAN.md) — Board feature architecture
+- [`GAME_REVIEWER_PLAN.md`](GAME_REVIEWER_PLAN.md) — Game Reviewer feature plan
+- [`PUZZLE_GENERATOR_PLAN.md`](PUZZLE_GENERATOR_PLAN.md) — Puzzle Generator feature plan
+- [`ANALYSIS_PIPELINE_SUMMARY.md`](ANALYSIS_PIPELINE_SUMMARY.md) — Project overview & file map

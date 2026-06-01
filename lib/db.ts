@@ -1,0 +1,53 @@
+import Dexie, { type EntityTable } from 'dexie';
+import type { GameReview } from './analysis';
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+type HistoryEntry =
+  | { kind: 'arrow'; from: string; to: string }
+  | { kind: 'highlight'; square: string };
+
+export interface StoredAnnotation {
+  arrows: [string, string][];
+  highlights: string[];
+  history: HistoryEntry[];
+}
+
+export interface LibraryFolder {
+  id: string;
+  name: string;
+  parentId: string | null;
+  depth: number; // 1 | 2 | 3
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface LibraryGame {
+  id: string;
+  folderId: string;
+  title: string;
+  pgn: string;
+  headers: Record<string, string>;
+  nodeComments: Record<string, string>;       // nodeId → comment text
+  annotations: Record<string, StoredAnnotation>; // nodeId → arrows/highlights
+  reviewData: GameReview | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+// ─── Database ─────────────────────────────────────────────────────────────────
+
+export class ChessAcademyDB extends Dexie {
+  folders!: EntityTable<LibraryFolder, 'id'>;
+  games!: EntityTable<LibraryGame, 'id'>;
+
+  constructor() {
+    super('chess-academy');
+    this.version(1).stores({
+      folders: 'id, parentId, depth, createdAt, updatedAt',
+      games:   'id, folderId, createdAt, updatedAt',
+    });
+  }
+}
+
+export const db = new ChessAcademyDB();

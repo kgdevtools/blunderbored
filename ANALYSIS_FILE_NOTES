@@ -1,0 +1,19 @@
+
+
+
+1) Phase Classifier
+
+2) Material evaluator 
+
+3) Minimal piece-square bonus (centre control as a proxy for activity)
+implentation array truncated for brevity
+
+pieceSquareBonus function has simplefied loagic, explain or lets discuss
+
+4) full game analzyer via the analyseGame function
+
+
+
+
+
+
