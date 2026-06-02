@@ -3,6 +3,7 @@ import { useMemo, useState } from 'react';
 import { Chess } from 'chess.js';
 import type { EngineMultiLine } from '@/lib/engine';
 import type { Square, PieceSymbol } from 'chess.js';
+import { EngineOfflineButton } from './EngineOfflineButton';
 
 interface EngineLinesProps {
   lines: EngineMultiLine[];
@@ -111,6 +112,9 @@ export function EngineLines({ lines, depth, isComputing, enabled, onToggle, curr
           {linesVisible ? 'Hide Lines' : 'Show Engine Lines'}
         </button>
       </div>
+
+      {/* Pre-download the engine so analysis works offline */}
+      <EngineOfflineButton />
 
       {/* Lines panel */}
       {showLines && (

@@ -17,7 +17,7 @@ import { BoardControls } from './BoardControls';
 import { FenBar } from './FenBar';
 import { GameInfoModal } from './GameInfoModal';
 import { LibraryModal } from './LibraryModal';
-import { saveGame, updateGame, serializeBoardState, checkDuplicate } from '@/lib/library';
+import { saveGame, updateGame, serializeBoardState, checkDuplicate, saveDraft, loadDraft, clearDraft } from '@/lib/library';
 import type { LibraryGame } from '@/lib/db';
 
 // ─── Icons ────────────────────────────────────────────────────────────────────
@@ -206,13 +206,47 @@ export function BoardShell({ initialPgn, initialFen }: BoardShellProps) {
   const engine = useBoardEngine(game.currentFen);
 
   const initApplied = useRef(false);
+  // Guards the autosave effect: it must not run until the mount-time draft
+  // restore has settled, otherwise the empty initial board would clear the draft.
+  const restoreDone = useRef(false);
   useEffect(() => {
     if (initApplied.current) return;
     initApplied.current = true;
-    if (initialPgn) game.loadPgn(initialPgn);
-    else if (initialFen) game.loadFen(initialFen);
+    // An explicit ?pgn/?fen wins over any saved draft.
+    if (initialPgn) { game.loadPgn(initialPgn); restoreDone.current = true; return; }
+    if (initialFen) { game.loadFen(initialFen); restoreDone.current = true; return; }
+    // Otherwise restore the autosaved draft, if any.
+    loadDraft()
+      .then((draft) => {
+        if (draft?.pgn) {
+          game.loadFromLibrary(draft.pgn, draft.headers, draft.nodeComments, draft.annotations);
+        }
+      })
+      .catch(() => {})
+      .finally(() => { restoreDone.current = true; });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // ── Draft autosave (single slot, debounced) ────────────────────────────────
+  // Watches the serialisable board state. exportPgn's identity is stable across
+  // pure move additions (root is mutated in place), so we depend on tokens /
+  // headers / comments / annotations, which do change identity.
+  useEffect(() => {
+    if (!restoreDone.current) return;
+    const snapshot = {
+      exportPgn: game.exportPgn,
+      headers: game.headers,
+      nodeComments: game.nodeComments,
+      allAnnotations: game.allAnnotations,
+    };
+    const dirty = game.isDirty;
+    const timer = setTimeout(() => {
+      if (dirty) saveDraft(snapshot).catch(() => {});
+      else clearDraft().catch(() => {});
+    }, 800);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [game.tokens, game.headers, game.nodeComments, game.allAnnotations, game.isDirty]);
 
   // ── Desktop/mobile detection ───────────────────────────────────────────────
   const [isDesktop, setIsDesktop] = useState(true);

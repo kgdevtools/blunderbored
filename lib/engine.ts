@@ -15,10 +15,17 @@ export type EngineMultiLine = {
   pv: string[];         // UCI move sequence
 };
 
+// If the wasm handshake or a search doesn't finish within these bounds we give
+// up and reject, instead of leaving callers hung on a stalled worker (seen on
+// low-memory mobile devices where the single-threaded build can stall).
+const HANDSHAKE_TIMEOUT_MS = 12_000;
+const SEARCH_TIMEOUT_MS = 25_000;
+
 class EngineService {
   private worker: Worker | null = null;
   private isReady = false;
   private readyResolve!: () => void;
+  private readyReject!: (err: Error) => void;
   private readyPromise!: Promise<void>;
 
   // Single-PV state
@@ -46,9 +53,34 @@ class EngineService {
   }
 
   private initReadyPromise() {
-    this.readyPromise = new Promise((resolve) => {
+    this.readyPromise = new Promise((resolve, reject) => {
       this.readyResolve = resolve;
+      this.readyReject = reject;
     });
+    // Guard against an unhandled rejection if readyReject fires with no awaiter.
+    this.readyPromise.catch(() => {});
+  }
+
+  // Tears the engine down and rejects every pending promise so callers fail
+  // fast instead of hanging. Nulling the worker means the next call retries.
+  private failEngine(err: Error) {
+    console.error('[Stockfish]', err.message);
+    this.readyReject?.(err);
+    this.currentReject?.(err);
+    this.currentMultiReject?.(err);
+    if (this.worker) {
+      this.worker.terminate();
+      this.worker = null;
+    }
+    this.isReady = false;
+    this.currentResolve = null;
+    this.currentReject = null;
+    this.currentMultiResolve = null;
+    this.currentMultiReject = null;
+    this.latestInfo = null;
+    this.multiLines.clear();
+    this.currentMultiCount = 0;
+    this.skipNextBestmove = false;
   }
 
   private get isBusy(): boolean {
@@ -65,7 +97,13 @@ class EngineService {
 
     this.initReadyPromise();
     this.isReady = false;
-    this.worker = new Worker('/engine/stockfish-18-lite-single.js');
+
+    try {
+      this.worker = new Worker('/engine/stockfish-18-lite-single.js');
+    } catch (err) {
+      this.worker = null;
+      throw err instanceof Error ? err : new Error('Failed to start engine worker');
+    }
 
     this.worker.onmessage = (e: MessageEvent) => {
       const line: string = String(e.data).trim();
@@ -76,28 +114,33 @@ class EngineService {
         this.send('isready');
         return;
       }
-      if (line === 'readyok') { this.isReady = true; this.readyResolve(); return; }
+      if (line === 'readyok') {
+        this.isReady = true;
+        console.info('[Stockfish] engine ready');
+        this.readyResolve();
+        return;
+      }
       this.parseLine(line);
     };
 
     this.worker.onerror = (e: ErrorEvent) => {
-      console.error('[Stockfish] Worker error:', e.message, e);
-      // Reject pending promises so callers don't hang.
-      this.currentReject?.(new Error('Stockfish worker crashed'));
-      this.currentMultiReject?.(new Error('Stockfish worker crashed'));
-      this.worker = null;
-      this.isReady = false;
-      this.currentResolve = null;
-      this.currentReject = null;
-      this.currentMultiResolve = null;
-      this.currentMultiReject = null;
-      this.latestInfo = null;
-      this.multiLines.clear();
-      this.skipNextBestmove = false;
+      this.failEngine(new Error(`Stockfish worker error: ${e.message || 'unknown'}`));
     };
 
+    console.info('[Stockfish] starting engine…');
     this.send('uci');
-    await this.readyPromise;
+
+    // Don't await forever: if the wasm never reports readyok, reject so the
+    // caller (and the UI) can recover instead of showing "Analysing…" endlessly.
+    const timer = setTimeout(() => {
+      if (!this.isReady) this.failEngine(new Error('Engine init timed out (no readyok)'));
+    }, HANDSHAKE_TIMEOUT_MS);
+
+    try {
+      await this.readyPromise;
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   private send(cmd: string) {
@@ -226,8 +269,32 @@ class EngineService {
     this.currentEvalFen = fen;
     this.currentMultiCount = pvCount;
     return new Promise<EngineMultiLine[]>((resolve, reject) => {
-      this.currentMultiResolve = resolve;
-      this.currentMultiReject = reject;
+      let settled = false;
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        console.error('[Stockfish] search timed out at depth', depth);
+        this.send('stop');
+        this.skipNextBestmove = true;
+        this.currentMultiResolve = null;
+        this.currentMultiReject = null;
+        this.multiLines.clear();
+        this.currentMultiCount = 0;
+        reject(new Error('Engine search timed out'));
+      }, SEARCH_TIMEOUT_MS);
+
+      this.currentMultiResolve = (lines) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(lines);
+      };
+      this.currentMultiReject = (err) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        reject(err);
+      };
       this.multiLines.clear();
       // No 'stop' here — cancel() already sent it and set skipNextBestmove.
       this.send(`setoption name MultiPV value ${pvCount}`);

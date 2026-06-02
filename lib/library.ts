@@ -1,5 +1,5 @@
 import { nanoid } from 'nanoid';
-import { db, LibraryFolder, LibraryGame, StoredAnnotation } from './db';
+import { db, LibraryFolder, LibraryGame, StoredAnnotation, BoardDraft } from './db';
 import type { GameReview } from './analysis';
 
 // ─── Duplicate detection ──────────────────────────────────────────────────────
@@ -127,6 +127,33 @@ export function serializeBoardState(
     annotations,
     reviewData: reviewData ?? null,
   };
+}
+
+// ─── Board draft (single-slot autosave) ───────────────────────────────────────
+
+const DRAFT_ID = 'board-current';
+
+export async function saveDraft(snapshot: BoardStateSnapshot): Promise<void> {
+  // Reuse the library serializer (Map → Record conversion) then drop the
+  // library-only fields the draft doesn't need.
+  const { pgn, headers, nodeComments, annotations } = serializeBoardState('', snapshot);
+  const draft: BoardDraft = {
+    id: DRAFT_ID,
+    pgn,
+    headers,
+    nodeComments,
+    annotations,
+    updatedAt: Date.now(),
+  };
+  await db.drafts.put(draft);
+}
+
+export async function loadDraft(): Promise<BoardDraft | undefined> {
+  return db.drafts.get(DRAFT_ID);
+}
+
+export async function clearDraft(): Promise<void> {
+  await db.drafts.delete(DRAFT_ID);
 }
 
 export function deriveTitle(headers: Record<string, string>): string {

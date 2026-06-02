@@ -1,5 +1,6 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono, JetBrains_Mono } from "next/font/google";
+import { ServiceWorkerRegister } from "@/components/pwa/ServiceWorkerRegister";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -23,6 +24,10 @@ export const metadata: Metadata = {
   description: "Chess analysis tool, game/move classifier and puzzle ganerator",
 };
 
+export const viewport: Viewport = {
+  themeColor: "#0f172a",
+};
+
 export default function RootLayout({
   children,
 }: Readonly<{
@@ -33,7 +38,10 @@ export default function RootLayout({
       lang="en"
       className={`${jetbrainsMono.variable} h-full antialiased`}
     >
-      <body className="min-h-full flex flex-col">{children}</body>
+      <body className="min-h-full flex flex-col">
+        <ServiceWorkerRegister />
+        {children}
+      </body>
     </html>
   );
 }
