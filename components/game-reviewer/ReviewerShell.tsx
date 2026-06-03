@@ -14,6 +14,7 @@ import { EvalBar } from '@/components/board/EvalBar';
 import { QUALITY_META, type MoveQuality } from '@/lib/accuracy';
 import { GameSummary } from './GameSummary';
 import { ReviewMoveList } from './ReviewMoveList';
+import { GameReport } from '@/components/graph/GameReport';
 import { GameInfoModal } from '@/components/board/GameInfoModal';
 
 // ── Icons ─────────────────────────────────────────────────────────────────────
@@ -53,11 +54,14 @@ interface ReviewerControlsProps {
   onShowGameInfo: () => void;
   onOpenInBoard: () => void;
   canOpenInBoard: boolean;
+  onOpenReport: () => void;
+  canOpenReport: boolean;
 }
 
 function ReviewerControls({
   onStart, onPrev, onNext, onEnd, onFlip,
   canPrev, canNext, onDownload, onShowGameInfo, onOpenInBoard, canOpenInBoard,
+  onOpenReport, canOpenReport,
 }: ReviewerControlsProps) {
   const [showMenu, setShowMenu] = useState(false);
   const menuRef    = useRef<HTMLDivElement>(null);
@@ -95,6 +99,14 @@ function ReviewerControls({
       <button className={btn} onClick={onNext}  disabled={!canNext} title="Next (→)">⟩</button>
       <button className={btn} onClick={onEnd}   disabled={!canNext} title="End (End)">⟩⟩</button>
       <button className={btn} onClick={onFlip}  title="Flip board (F)">⇅</button>
+      <button
+        onClick={onOpenReport}
+        disabled={!canOpenReport}
+        className="flex-none px-2.5 py-1.5 rounded bg-blue-700 hover:bg-blue-600 disabled:opacity-30 disabled:cursor-not-allowed text-sm font-medium text-white transition-colors"
+        title="Game report"
+      >
+        Report
+      </button>
       <button
         ref={triggerRef}
         className="flex-none px-2 py-1.5 rounded bg-zinc-700 hover:bg-zinc-600 text-sm transition-colors"
@@ -171,6 +183,7 @@ export function ReviewerShell({ initialPgn }: ReviewerShellProps) {
   const [pgnInput, setPgnInput] = useState(initialPgn ?? '');
   const [flipped, setFlipped]   = useState(false);
   const [showGameInfo, setShowGameInfo]   = useState(false);
+  const [showReport, setShowReport]       = useState(false);
   const [reviewComments, setReviewComments] = useState<Map<number, string>>(new Map());
 
   // Sync local headers from reviewer (allows editing in the modal)
@@ -192,6 +205,7 @@ export function ReviewerShell({ initialPgn }: ReviewerShellProps) {
   // Reset comments on new analysis
   useEffect(() => {
     if (reviewer.review) setReviewComments(new Map());
+    setShowReport(false);
   }, [reviewer.review]);
 
   const initApplied = useRef(false);
@@ -381,11 +395,23 @@ export function ReviewerShell({ initialPgn }: ReviewerShellProps) {
               onShowGameInfo={() => setShowGameInfo(true)}
               onOpenInBoard={handleOpenInBoard}
               canOpenInBoard={!!reviewer.originalPgn}
+              onOpenReport={() => setShowReport(true)}
+              canOpenReport={!!reviewer.review}
             />
           </div>
 
           {/* Moves list — second on mobile (order-2), first on desktop (order-1) */}
           <div className="order-2 lg:order-1 lg:flex-1 lg:overflow-y-auto lg:min-h-0">
+            {showReport && reviewer.review ? (
+              <GameReport
+                review={reviewer.review}
+                originalPgn={reviewer.originalPgn ?? ''}
+                currentMoveIndex={reviewer.currentMoveIndex}
+                onSelectMove={reviewer.goToMove}
+                onClose={() => setShowReport(false)}
+              />
+            ) : (
+            <>
             {reviewer.review && <GameSummary review={reviewer.review} />}
             {reviewer.error && (
               <div className="mx-1 my-2 px-2 py-2 rounded bg-red-900/40 border border-red-700 text-xs text-red-300">
@@ -414,6 +440,8 @@ export function ReviewerShell({ initialPgn }: ReviewerShellProps) {
               <p className="text-zinc-500 text-xs px-1 py-2">
                 Paste a PGN below and click Analyse.
               </p>
+            )}
+            </>
             )}
           </div>
         </div>
