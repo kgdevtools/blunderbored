@@ -1,6 +1,7 @@
 'use client';
 import { Fragment, useEffect, useRef, useState } from 'react';
 import type { GameNode, MoveListToken } from '@/lib/gameTree';
+import { RefLinker } from './RefLinker';
 
 interface MovesListProps {
   tokens: MoveListToken[];
@@ -10,10 +11,31 @@ interface MovesListProps {
   onDeleteAfter: (node: GameNode) => void;
   comments?: Map<string, string>;
   onSetComment?: (nodeId: string, text: string) => void;
+  nags?: Map<string, number[]>;
+  onSetNags?: (nodeId: string, codes: number[]) => void;
+  // The saved library game id, if this game is in the library. Refs need it as
+  // their source; when null the ref action is disabled.
+  gameId?: string | null;
 }
+
+// Standard PGN NAGs, ordered best → worst for the picker.
+const NAG_OPTIONS: { code: number; glyph: string; color: string }[] = [
+  { code: 3, glyph: '!!', color: 'text-green-400' },
+  { code: 1, glyph: '!',  color: 'text-green-400' },
+  { code: 5, glyph: '!?', color: 'text-blue-400' },
+  { code: 6, glyph: '?!', color: 'text-amber-400' },
+  { code: 2, glyph: '?',  color: 'text-red-400' },
+  { code: 4, glyph: '??', color: 'text-red-400' },
+];
+const NAG_BY_CODE = new Map(NAG_OPTIONS.map((n) => [n.code, n]));
 
 function getMoveNumber(node: GameNode): number {
   return parseInt(node.parent!.fen.split(' ')[5], 10);
+}
+
+function moveLabel(node: GameNode): string {
+  const num = getMoveNumber(node);
+  return `${num}${node.move!.color === 'b' ? '...' : '.'} ${node.move!.san}`;
 }
 
 interface CtxMenu {
@@ -22,11 +44,19 @@ interface CtxMenu {
   node: GameNode;
 }
 
-export function MovesList({ tokens, current, onSelect, onDeleteMove, onDeleteAfter, comments, onSetComment }: MovesListProps) {
+export function MovesList({ tokens, current, onSelect, onDeleteMove, onDeleteAfter, comments, onSetComment, nags, onSetNags, gameId }: MovesListProps) {
   const activeRef = useRef<HTMLButtonElement>(null);
   const [ctxMenu, setCtxMenu] = useState<CtxMenu | null>(null);
   const [editingNodeId, setEditingNodeId] = useState<string | null>(null);
+  const [refNode, setRefNode] = useState<GameNode | null>(null);
   const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Toggle a NAG: picking the one already set clears it.
+  const handleToggleNag = (node: GameNode, code: number) => {
+    const current = nags?.get(node.id) ?? [];
+    onSetNags?.(node.id, current.includes(code) ? [] : [code]);
+    setCtxMenu(null);
+  };
 
   useEffect(() => {
     activeRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
@@ -84,6 +114,7 @@ export function MovesList({ tokens, current, onSelect, onDeleteMove, onDeleteAft
           const isVariation = variationDepth > 0;
           const comment = comments?.get(node.id);
           const isEditing = editingNodeId === node.id;
+          const nagInfo = NAG_BY_CODE.get(nags?.get(node.id)?.[0] ?? -1);
 
           return (
             <Fragment key={node.id}>
@@ -116,6 +147,9 @@ export function MovesList({ tokens, current, onSelect, onDeleteMove, onDeleteAft
                   ].join(' ')}
                 >
                   {node.move!.san}
+                  {nagInfo && (
+                    <span className={`font-bold ${isActive ? 'text-white' : nagInfo.color}`}>{nagInfo.glyph}</span>
+                  )}
                   {comment && !isEditing && (
                     <span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-400 ml-0.5 align-middle" />
                   )}
@@ -164,6 +198,29 @@ export function MovesList({ tokens, current, onSelect, onDeleteMove, onDeleteAft
           onMouseDown={(e) => e.stopPropagation()}
           onTouchStart={(e) => e.stopPropagation()}
         >
+          {onSetNags && (
+            <>
+              <div className="flex items-center gap-0.5 px-2 py-1.5">
+                {NAG_OPTIONS.map((n) => {
+                  const isSet = (nags?.get(ctxMenu.node.id) ?? []).includes(n.code);
+                  return (
+                    <button
+                      key={n.code}
+                      onClick={() => handleToggleNag(ctxMenu.node, n.code)}
+                      title={`Annotate ${n.glyph}`}
+                      className={[
+                        'flex-1 rounded px-1 py-0.5 font-mono font-bold text-sm hover:bg-zinc-700',
+                        isSet ? `bg-zinc-700 ${n.color}` : n.color,
+                      ].join(' ')}
+                    >
+                      {n.glyph}
+                    </button>
+                  );
+                })}
+              </div>
+              <div className="my-1 border-t border-zinc-700" />
+            </>
+          )}
           {onSetComment && (
             <>
               <button
@@ -184,6 +241,15 @@ export function MovesList({ tokens, current, onSelect, onDeleteMove, onDeleteAft
             </>
           )}
           <button
+            className="block w-full text-left px-3 py-1.5 hover:bg-zinc-700 text-zinc-200 disabled:opacity-40 disabled:cursor-not-allowed"
+            disabled={!gameId}
+            title={gameId ? undefined : 'Save this game to the library first'}
+            onClick={() => { setRefNode(ctxMenu.node); setCtxMenu(null); }}
+          >
+            Link to game / concept…
+          </button>
+          <div className="my-1 border-t border-zinc-700" />
+          <button
             className="block w-full text-left px-3 py-1.5 hover:bg-zinc-700 text-red-400"
             onClick={() => { onDeleteMove(ctxMenu.node); setCtxMenu(null); }}
           >
@@ -198,6 +264,15 @@ export function MovesList({ tokens, current, onSelect, onDeleteMove, onDeleteAft
             Delete All Moves After
           </button>
         </div>
+      )}
+
+      {refNode && gameId && (
+        <RefLinker
+          gameId={gameId}
+          sourceNodeId={refNode.id}
+          moveLabel={moveLabel(refNode)}
+          onClose={() => setRefNode(null)}
+        />
       )}
     </>
   );

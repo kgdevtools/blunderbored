@@ -1,6 +1,6 @@
 'use client';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { db, LibraryFolder, LibraryGame } from '@/lib/db';
+import { db, LibraryFolder, LibraryGame, ConceptNode, GraphEdge } from '@/lib/db';
 
 // Folders whose parentId matches — null means root level.
 // We filter in JS rather than via index because IndexedDB does not index null values.
@@ -28,6 +28,36 @@ export function useFolderGames(folderId: string | null): LibraryGame[] {
         .then(games => games.sort((a, b) => b.updatedAt - a.updatedAt));
     },
     [folderId],
+  ) ?? [];
+}
+
+// All concept nodes, sorted by name (name isn't indexed, so sort in JS).
+export function useConcepts(): ConceptNode[] {
+  return useLiveQuery(
+    () => db.conceptNodes.toArray().then(c => c.sort((a, b) => a.name.localeCompare(b.name))),
+    [],
+  ) ?? [];
+}
+
+// Every game in the library, newest first. Used by the ref-linker / graph.
+export function useAllGames(): LibraryGame[] {
+  return useLiveQuery(
+    () => db.games.toArray().then(g => g.sort((a, b) => b.updatedAt - a.updatedAt)),
+    [],
+  ) ?? [];
+}
+
+// Edges anchored at a specific move of a game (move→game / move→concept refs).
+export function useRefsForNode(gameId: string | null, sourceNodeId: string | null): GraphEdge[] {
+  return useLiveQuery(
+    () => {
+      if (!gameId || !sourceNodeId) return Promise.resolve([] as GraphEdge[]);
+      return db.graphEdges
+        .where('source').equals(gameId)
+        .filter(e => e.sourceNodeId === sourceNodeId)
+        .toArray();
+    },
+    [gameId, sourceNodeId],
   ) ?? [];
 }
 

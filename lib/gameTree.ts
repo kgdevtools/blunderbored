@@ -50,6 +50,20 @@ export interface PgnExtras {
   comments?: Map<string, string>;
   // arrows: [from, to][] and highlights: square[] keyed by node id
   annotations?: Map<string, { arrows: [string, string][]; highlights: string[] }>;
+  // NAG codes keyed by node id, e.g. [1] = good move (!). Emitted as `$1` after the SAN.
+  nags?: Map<string, number[]>;
+}
+
+// Standard PGN NAG tokens emitted after a move's SAN, e.g. " $1 $5".
+function buildNags(nodeId: string, extras?: PgnExtras): string {
+  const nags = extras?.nags?.get(nodeId);
+  if (!nags || nags.length === 0) return '';
+  return ' ' + nags.map((n) => `$${n}`).join(' ');
+}
+
+// Full move text for one node: SAN, then any NAGs, then the comment/annotation block.
+function renderMove(node: GameNode, extras?: PgnExtras): string {
+  return `${node.move!.san}${buildNags(node.id, extras)}${buildMoveComment(node.id, extras)}`;
 }
 
 // Builds the PGN comment block for a node, e.g. { [%csl Ye4] [%cal Ye2e4] My comment }
@@ -94,7 +108,7 @@ export function toMainLinePgn(root: GameNode, headers?: Record<string, string>, 
 
     if (startsWithBlack) {
       const n = mainNodes[0];
-      parts.push(`${moveNum}... ${n.move!.san}${buildMoveComment(n.id, extras)}`);
+      parts.push(`${moveNum}... ${renderMove(n, extras)}`);
       i = 1;
       moveNum++;
     }
@@ -102,9 +116,9 @@ export function toMainLinePgn(root: GameNode, headers?: Record<string, string>, 
     for (; i < mainNodes.length; i += 2) {
       const wNode = mainNodes[i];
       const bNode = mainNodes[i + 1];
-      const wPart = `${wNode.move!.san}${buildMoveComment(wNode.id, extras)}`;
+      const wPart = renderMove(wNode, extras);
       if (bNode) {
-        const bPart = `${bNode.move!.san}${buildMoveComment(bNode.id, extras)}`;
+        const bPart = renderMove(bNode, extras);
         parts.push(`${moveNum}. ${wPart} ${bPart}`);
       } else {
         parts.push(`${moveNum}. ${wPart}`);

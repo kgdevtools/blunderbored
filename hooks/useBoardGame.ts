@@ -33,6 +33,7 @@ export function useBoardGame() {
   const [flipped, setFlipped] = useState(false);
   const [headers, setHeadersState] = useState<Record<string, string>>({});
   const [nodeComments, setNodeCommentsMap] = useState<Map<string, string>>(new Map());
+  const [nags, setNagsMap] = useState<Map<string, number[]>>(new Map());
   // Incremented whenever the tree is structurally mutated (addMove) so memoised
   // consumers that depend on [root] get fresh values despite the in-place mutation.
   const [treeVersion, setTreeVersion] = useState(0);
@@ -78,6 +79,7 @@ export function useBoardGame() {
     setTreeVersion(0);
     setAnnotations(new Map());
     setNodeCommentsMap(new Map());
+    setNagsMap(new Map());
   }, []);
 
   const setHeader = useCallback((key: string, value: string) => {
@@ -98,6 +100,7 @@ export function useBoardGame() {
     setTreeVersion(0);
     setAnnotations(new Map());
     setNodeCommentsMap(new Map());
+    setNagsMap(new Map());
   }, []);
 
   // Fresh start: reset to the initial position and clear all game metadata.
@@ -108,6 +111,7 @@ export function useBoardGame() {
     setTreeVersion(0);
     setAnnotations(new Map());
     setNodeCommentsMap(new Map());
+    setNagsMap(new Map());
     setHeadersState({});
   }, []);
 
@@ -115,6 +119,16 @@ export function useBoardGame() {
     setNodeCommentsMap(prev => {
       const next = new Map(prev);
       if (text.trim()) next.set(nodeId, text.trim());
+      else next.delete(nodeId);
+      return next;
+    });
+  }, []);
+
+  // Replaces the NAG codes on a node. An empty array clears them.
+  const setNodeNags = useCallback((nodeId: string, codes: number[]) => {
+    setNagsMap(prev => {
+      const next = new Map(prev);
+      if (codes.length) next.set(nodeId, codes);
       else next.delete(nodeId);
       return next;
     });
@@ -157,7 +171,8 @@ export function useBoardGame() {
     annotations: new Map(
       [...annotations.entries()].map(([id, ann]) => [id, { arrows: ann.arrows, highlights: ann.highlights }])
     ),
-  }), [root, headers, nodeComments, annotations]);
+    nags,
+  }), [root, headers, nodeComments, annotations, nags]);
 
   // ─── Tree editing ─────────────────────────────────────────────────────────
 
@@ -194,6 +209,7 @@ export function useBoardGame() {
     savedHeaders: Record<string, string>,
     savedComments: Record<string, string>,
     savedAnnotations: Record<string, StoredAnnotation>,
+    savedNags?: Record<string, number[]>,
   ) => {
     const chess = new Chess();
     chess.loadPgn(pgn);
@@ -211,6 +227,7 @@ export function useBoardGame() {
     setTreeVersion(0);
     setHeadersState({ ...savedHeaders });
     setNodeCommentsMap(new Map(Object.entries(savedComments)));
+    setNagsMap(new Map(Object.entries(savedNags ?? {})));
     setAnnotations(new Map(
       Object.entries(savedAnnotations).map(([k, v]) => [k, v as NodeAnnotations]),
     ));
@@ -309,6 +326,8 @@ export function useBoardGame() {
     exportPgn,
     nodeComments,
     setNodeComment,
+    nags,
+    setNodeNags,
     // Annotations (derived from current node)
     annotationArrows: currentAnn.arrows,
     annotationHighlights: currentAnn.highlights,

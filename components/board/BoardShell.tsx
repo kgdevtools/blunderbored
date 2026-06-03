@@ -163,7 +163,7 @@ export function BoardShell({ initialPgn, initialFen }: BoardShellProps) {
     loadDraft()
       .then((draft) => {
         if (draft?.pgn) {
-          game.loadFromLibrary(draft.pgn, draft.headers, draft.nodeComments, draft.annotations);
+          game.loadFromLibrary(draft.pgn, draft.headers, draft.nodeComments, draft.annotations, draft.nags);
         }
       })
       .catch(() => {})
@@ -182,6 +182,7 @@ export function BoardShell({ initialPgn, initialFen }: BoardShellProps) {
       headers: game.headers,
       nodeComments: game.nodeComments,
       allAnnotations: game.allAnnotations,
+      nags: game.nags,
     };
     const dirty = game.isDirty;
     const timer = setTimeout(() => {
@@ -190,7 +191,7 @@ export function BoardShell({ initialPgn, initialFen }: BoardShellProps) {
     }, 800);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [game.tokens, game.headers, game.nodeComments, game.allAnnotations, game.isDirty]);
+  }, [game.tokens, game.headers, game.nodeComments, game.allAnnotations, game.nags, game.isDirty]);
 
   // ── Desktop/mobile detection ───────────────────────────────────────────────
   const [isDesktop, setIsDesktop] = useState(true);
@@ -251,6 +252,7 @@ export function BoardShell({ initialPgn, initialFen }: BoardShellProps) {
       libGame.headers,
       libGame.nodeComments,
       libGame.annotations,
+      libGame.nags,
     );
     setLoadedFromLibraryId(libGame.id);
     setShowLibrary(false);
@@ -262,6 +264,7 @@ export function BoardShell({ initialPgn, initialFen }: BoardShellProps) {
       headers: game.headers,
       nodeComments: game.nodeComments,
       allAnnotations: game.allAnnotations,
+      nags: game.nags,
     });
     if (loadedFromLibraryId) {
       await updateGame(loadedFromLibraryId, payload);
@@ -545,6 +548,9 @@ export function BoardShell({ initialPgn, initialFen }: BoardShellProps) {
               onDeleteAfter={game.deleteAfter}
               comments={game.nodeComments}
               onSetComment={game.setNodeComment}
+              nags={game.nags}
+              onSetNags={game.setNodeNags}
+              gameId={loadedFromLibraryId}
             />
           </div>
 
