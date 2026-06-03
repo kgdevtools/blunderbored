@@ -20,8 +20,8 @@ const jetbrainsMono = JetBrains_Mono({
 
 
 export const metadata: Metadata = {
-  title: "Chess Analysis Manager",
-  description: "Chess analysis tool, game/move classifier and puzzle ganerator",
+  title: "Blunderbored",
+  description: "Chess analysis tool, game/move classifier and puzzle generator",
 };
 
 export const viewport: Viewport = {
