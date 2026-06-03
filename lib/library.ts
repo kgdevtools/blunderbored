@@ -1,6 +1,20 @@
 import { nanoid } from 'nanoid';
 import { db, LibraryFolder, LibraryGame, StoredAnnotation, BoardDraft } from './db';
 import type { GameReview } from './analysis';
+import { ensureOpeningConcept } from './concepts';
+import { ensureConceptGameEdge, deleteEdgesForGame } from './edges';
+
+// Auto-seed: derive an opening concept from a game's ECO/Opening headers and
+// link it to the game (origin 'auto'). Idempotent and best-effort — a failure
+// here must never block the save itself.
+async function seedConceptsForGame(game: LibraryGame): Promise<void> {
+  try {
+    const concept = await ensureOpeningConcept(game.headers.ECO, game.headers.Opening);
+    if (concept) await ensureConceptGameEdge(concept.id, game.id, 'auto');
+  } catch {
+    /* graph seeding is non-critical */
+  }
+}
 
 // ─── Duplicate detection ──────────────────────────────────────────────────────
 
@@ -85,6 +99,7 @@ export async function saveGame(payload: SaveGamePayload): Promise<LibraryGame> {
     updatedAt: Date.now(),
   };
   await db.games.add(game);
+  await seedConceptsForGame(game);
   return game;
 }
 
@@ -94,6 +109,7 @@ export async function updateGame(id: string, partial: Partial<Omit<LibraryGame, 
 
 export async function deleteGame(id: string): Promise<void> {
   await db.games.delete(id);
+  await deleteEdgesForGame(id);
 }
 
 // ─── Serialization ────────────────────────────────────────────────────────────
@@ -103,6 +119,7 @@ export interface BoardStateSnapshot {
   headers: Record<string, string>;
   nodeComments: Map<string, string>;
   allAnnotations: Map<string, StoredAnnotation>;
+  nags?: Map<string, number[]>;
 }
 
 export function serializeBoardState(
@@ -118,6 +135,9 @@ export function serializeBoardState(
   const annotations: Record<string, StoredAnnotation> = {};
   snapshot.allAnnotations.forEach((v, k) => { annotations[k] = v; });
 
+  const nags: Record<string, number[]> = {};
+  snapshot.nags?.forEach((v, k) => { if (v.length) nags[k] = v; });
+
   return {
     folderId,
     title: deriveTitle(snapshot.headers),
@@ -125,6 +145,7 @@ export function serializeBoardState(
     headers: { ...snapshot.headers },
     nodeComments,
     annotations,
+    nags,
     reviewData: reviewData ?? null,
   };
 }
@@ -136,13 +157,14 @@ const DRAFT_ID = 'board-current';
 export async function saveDraft(snapshot: BoardStateSnapshot): Promise<void> {
   // Reuse the library serializer (Map → Record conversion) then drop the
   // library-only fields the draft doesn't need.
-  const { pgn, headers, nodeComments, annotations } = serializeBoardState('', snapshot);
+  const { pgn, headers, nodeComments, annotations, nags } = serializeBoardState('', snapshot);
   const draft: BoardDraft = {
     id: DRAFT_ID,
     pgn,
     headers,
     nodeComments,
     annotations,
+    nags,
     updatedAt: Date.now(),
   };
   await db.drafts.put(draft);
