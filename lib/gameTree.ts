@@ -8,6 +8,18 @@ export interface GameNode {
   children: GameNode[];   // children[0] is the main-line continuation
 }
 
+// Normalises PGN text that mobile keyboards / clipboards mangle: curly quotes
+// in header tags, non-breaking & thin spaces, and zero-width characters all make
+// chess.js's strict parser throw. Run this before loadPgn.
+export function sanitizePgn(pgn: string): string {
+  return pgn
+    .replace(/[\u00a0\u2007\u2009\u202f]/g, ' ') // nbsp / figure / thin / narrow-nbsp -> space
+    .replace(/[\u201c\u201d\u201e\u201f\u2033]/g, '"') // curly double quotes / double-prime -> "
+    .replace(/[\u2018\u2019\u201a\u201b\u2032]/g, "'") // curly single quotes / prime -> '
+    .replace(/[\u200b\u200c\u200d\ufeff]/g, '') // zero-width chars / BOM
+    .trim();
+}
+
 let _counter = 0;
 
 export function createRootNode(fen: string): GameNode {

@@ -36,7 +36,7 @@ function DownloadIcon() {
 interface FenBarProps {
   currentFen: string;
   onFenLoad: (fen: string) => void;
-  onPgnLoad: (pgn: string) => void;
+  onPgnLoad: (pgn: string) => boolean;
   exportPgn: () => string;
 }
 
@@ -64,8 +64,8 @@ export function FenBar({ currentFen, onFenLoad, onPgnLoad, exportPgn }: FenBarPr
   const handleLoadPgn = () => {
     const trimmed = pgnInput.trim();
     if (!trimmed) return;
-    onPgnLoad(trimmed);
-    setPgnInput('');
+    // Keep the text on failure so the user doesn't lose their paste.
+    if (onPgnLoad(trimmed)) setPgnInput('');
   };
 
   const handleCopyFen = () => {

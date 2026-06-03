@@ -1,6 +1,7 @@
 'use client';
 import { useState, useCallback, useRef } from 'react';
 import { analyseGame, GameReview, ReviewedMove } from '@/lib/analysis';
+import { sanitizePgn } from '@/lib/gameTree';
 
 const START_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
 
@@ -46,20 +47,21 @@ export function useGameReviewer(): UseGameReviewerReturn {
   const analysisIdRef = useRef(0);
 
   const loadPgn = useCallback(async (pgn: string) => {
+    const clean = sanitizePgn(pgn); // normalise mobile-paste quirks before parsing
     const id = ++analysisIdRef.current;
     setIsLoading(true);
     setError(null);
     setReview(null);
-    setOriginalPgn(pgn);
+    setOriginalPgn(clean);
     // Parse PGN headers
     const parsed: Record<string, string> = {};
-    for (const m of pgn.matchAll(/^\[(\w+)\s+"([^"]*)"\]/gm)) parsed[m[1]] = m[2];
+    for (const m of clean.matchAll(/^\[(\w+)\s+"([^"]*)"\]/gm)) parsed[m[1]] = m[2];
     setHeaders(parsed);
     setCurrentMoveIndex(-1);
     setProgress({ current: 0, total: 0 });
 
     try {
-      const result = await analyseGame(pgn, (current, total) => {
+      const result = await analyseGame(clean, (current, total) => {
         if (analysisIdRef.current === id) setProgress({ current, total });
       });
       if (analysisIdRef.current === id) {

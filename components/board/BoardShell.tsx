@@ -300,10 +300,12 @@ export function BoardShell({ initialPgn, initialFen }: BoardShellProps) {
   }, [game.isDirty, doLoad]);
 
   // Wrap load callbacks so a fresh PGN/FEN clears the library-loaded-game tracking.
-  const handlePgnLoad = useCallback((pgn: string) => {
-    game.loadPgn(pgn);
-    setLoadedFromLibraryId(null);
-  }, [game]);
+  const handlePgnLoad = useCallback((pgn: string): boolean => {
+    const ok = game.loadPgn(pgn);
+    if (ok) setLoadedFromLibraryId(null);
+    else showToast('Could not read that PGN — check the moves and try again');
+    return ok;
+  }, [game, showToast]);
 
   const handleFenLoad = useCallback((fen: string) => {
     game.loadFen(fen);

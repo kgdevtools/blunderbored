@@ -24,6 +24,7 @@ import {
   toMainLinePgn,
   flattenTree,
   deleteMovesAfterNode,
+  sanitizePgn,
 } from '@/lib/gameTree';
 
 export function useBoardGame() {
@@ -56,13 +57,21 @@ export function useBoardGame() {
 
   // ─── Loading ──────────────────────────────────────────────────────────────
 
-  const loadPgn = useCallback((pgn: string) => {
+  // Returns false if the PGN couldn't be parsed so callers can surface an error
+  // instead of failing silently. Sanitises mobile-paste quirks (curly quotes,
+  // non-breaking spaces) that would otherwise make chess.js throw.
+  const loadPgn = useCallback((pgn: string): boolean => {
+    const clean = sanitizePgn(pgn);
     const chess = new Chess();
-    chess.loadPgn(pgn);
+    try {
+      chess.loadPgn(clean);
+    } catch {
+      return false;
+    }
     const history = chess.history({ verbose: true });
     // Parse PGN header tags (chess.header() no-arg form is deprecated)
     const parsed: Record<string, string> = {};
-    for (const m of pgn.matchAll(/^\[(\w+)\s+"([^"]*)"\]/gm)) {
+    for (const m of clean.matchAll(/^\[(\w+)\s+"([^"]*)"\]/gm)) {
       parsed[m[1]] = m[2];
     }
     setHeadersState(parsed);
@@ -80,6 +89,7 @@ export function useBoardGame() {
     setAnnotations(new Map());
     setNodeCommentsMap(new Map());
     setNagsMap(new Map());
+    return true;
   }, []);
 
   const setHeader = useCallback((key: string, value: string) => {
@@ -212,7 +222,11 @@ export function useBoardGame() {
     savedNags?: Record<string, number[]>,
   ) => {
     const chess = new Chess();
-    chess.loadPgn(pgn);
+    try {
+      chess.loadPgn(sanitizePgn(pgn));
+    } catch {
+      return; // leave the current board untouched rather than crashing
+    }
     const history = chess.history({ verbose: true });
 
     const startFen = history[0]?.before ?? DEFAULT_POSITION;
