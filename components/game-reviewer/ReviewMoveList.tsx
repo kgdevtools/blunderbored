@@ -2,7 +2,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { ReviewedMove } from '@/lib/analysis';
 import { QUALITY_META } from '@/lib/accuracy';
-import { MoveKmapsPanel } from './MoveKmapsPanel';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -197,13 +196,12 @@ export function ReviewMoveList({ moves, currentMoveIndex, onSelectMove, comments
                       <span className="text-zinc-600 tabular-nums">({formatEval(activeMove.evalBefore)})</span>
                     </div>
                   )}
-                  <MoveKmapsPanel kmaps={activeMove.kmaps} />
                 </div>
               )}
 
               {/* Per-half comments */}
               {whiteComment && !editingWhite && (
-                <div className="mx-8 mb-0.5 px-2 py-0.5 rounded bg-zinc-800 border-l-2 border-zinc-600 text-xs text-zinc-400 italic">
+                <div className="pl-8 pr-2 mb-0.5 text-xs text-zinc-400 tracking-tightest leading-tight font-[family-name:var(--font-jetbrains-mono)]">
                   {whiteComment}
                 </div>
               )}
@@ -211,7 +209,7 @@ export function ReviewMoveList({ moves, currentMoveIndex, onSelectMove, comments
                 <CommentEditor comment={whiteComment} onSave={(t) => pair.white && handleSaveComment(pair.white.moveIndex, t)} />
               )}
               {blackComment && !editingBlack && (
-                <div className="mx-8 mb-0.5 px-2 py-0.5 rounded bg-zinc-800 border-l-2 border-zinc-600 text-xs text-zinc-400 italic">
+                <div className="pl-8 pr-2 mb-0.5 text-xs text-zinc-400 tracking-tightest leading-tight font-[family-name:var(--font-jetbrains-mono)]">
                   {blackComment}
                 </div>
               )}

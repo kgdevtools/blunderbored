@@ -5,6 +5,7 @@ import { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback, typ
 // getBoundingClientRect always returns real values. Falls back to useEffect on
 // the server where layout APIs are unavailable.
 const useMeasureEffect = typeof window !== 'undefined' ? useLayoutEffect : useEffect;
+import { useRouter } from 'next/navigation';
 import { Chess } from 'chess.js';
 import { Chessboard } from '@zoendev/react-chessboard';
 import type { Square as CbSquare, CustomSquareProps } from '@zoendev/react-chessboard/dist/chessboard/types/index';
@@ -26,6 +27,15 @@ function DownloadIcon() {
   );
 }
 
+function BoardIcon() {
+  return (
+    <svg className="inline-block shrink-0" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="3" y="3" width="18" height="18" rx="1" />
+      <path d="M9 3v18M15 3v18M3 9h18M3 15h18" />
+    </svg>
+  );
+}
+
 // ── Controls ──────────────────────────────────────────────────────────────────
 
 const btn =
@@ -41,11 +51,13 @@ interface ReviewerControlsProps {
   canNext:       boolean;
   onDownload:    () => void;
   onShowGameInfo: () => void;
+  onOpenInBoard: () => void;
+  canOpenInBoard: boolean;
 }
 
 function ReviewerControls({
   onStart, onPrev, onNext, onEnd, onFlip,
-  canPrev, canNext, onDownload, onShowGameInfo,
+  canPrev, canNext, onDownload, onShowGameInfo, onOpenInBoard, canOpenInBoard,
 }: ReviewerControlsProps) {
   const [showMenu, setShowMenu] = useState(false);
   const menuRef    = useRef<HTMLDivElement>(null);
@@ -98,6 +110,16 @@ function ReviewerControls({
           className="absolute bottom-full right-0 mb-1 z-50 bg-zinc-800 border border-zinc-600 rounded shadow-xl py-1 min-w-[180px] text-sm"
         >
           <button
+            className="flex items-center gap-2 w-full text-left px-3 py-1.5 hover:bg-zinc-700 text-zinc-200 disabled:opacity-40 disabled:cursor-not-allowed"
+            disabled={!canOpenInBoard}
+            title={canOpenInBoard ? undefined : 'Analyse a game first'}
+            onClick={() => { onOpenInBoard(); setShowMenu(false); }}
+          >
+            <BoardIcon />
+            Open in Board
+          </button>
+          <div className="my-1 border-t border-zinc-700" />
+          <button
             className="flex items-center gap-2 w-full text-left px-3 py-1.5 hover:bg-zinc-700 text-zinc-200"
             onClick={() => { onShowGameInfo(); setShowMenu(false); }}
           >
@@ -145,6 +167,7 @@ interface ReviewerShellProps {
 
 export function ReviewerShell({ initialPgn }: ReviewerShellProps) {
   const reviewer = useGameReviewer();
+  const router = useRouter();
   const [pgnInput, setPgnInput] = useState(initialPgn ?? '');
   const [flipped, setFlipped]   = useState(false);
   const [showGameInfo, setShowGameInfo]   = useState(false);
@@ -299,6 +322,13 @@ export function ReviewerShell({ initialPgn }: ReviewerShellProps) {
     URL.revokeObjectURL(url);
   };
 
+  // ── Open the analysed game on the full Board ────────────────────────────────
+  const handleOpenInBoard = () => {
+    const pgn = reviewer.originalPgn;
+    if (!pgn) return;
+    router.push(`/board?pgn=${encodeURIComponent(pgn)}`);
+  };
+
   return (
     <div className="flex flex-col gap-3 w-full">
       {/* ── Main layout: stacked on mobile, side-by-side on desktop ─────── */}
@@ -349,6 +379,8 @@ export function ReviewerShell({ initialPgn }: ReviewerShellProps) {
               canNext={canNext}
               onDownload={handleDownload}
               onShowGameInfo={() => setShowGameInfo(true)}
+              onOpenInBoard={handleOpenInBoard}
+              canOpenInBoard={!!reviewer.originalPgn}
             />
           </div>
 

@@ -158,7 +158,7 @@ export function MovesList({ tokens, current, onSelect, onDeleteMove, onDeleteAft
 
               {/* Comment display */}
               {comment && !isEditing && (
-                <span className="mx-0.5 px-1.5 py-0.5 rounded bg-zinc-800 border-l-2 border-zinc-600 text-xs text-zinc-400 italic">
+                <span className="mx-1 text-xs text-zinc-400 tracking-tightest leading-tight font-[family-name:var(--font-jetbrains-mono)]">
                   {comment}
                 </span>
               )}

@@ -71,15 +71,16 @@ export function EngineLines({ lines, depth, isComputing, enabled, onToggle, curr
   const showLines = enabled && linesVisible;
 
   return (
-    <div className="border-t border-zinc-700 pt-2 mt-2">
-      {/* Header */}
-      <div className="flex flex-wrap items-center gap-1.5 mb-1">
+    <div className="mt-2">
+      {/* Header — the engine buttons sit flush against the top & bottom rules
+          (no vertical padding on the row; px gives a little horizontal breathing room). */}
+      <div className="flex flex-wrap items-center gap-1.5 px-2 border-y border-zinc-700">
         {/* Eval score — prominent */}
         <span className={`font-mono font-bold text-sm tracking-tight tabular-nums ${enabled && headerScore ? headerScoreColor : 'text-zinc-600'}`}>
           {enabled && headerScore ? headerScore : '—'}
         </span>
-        {/* Engine label — subordinate */}
-        <span className="text-[10px] tracking-tight text-zinc-500 flex-1 min-w-0 truncate leading-none">
+        {/* Engine label */}
+        <span className="text-xs font-semibold tracking-tight text-zinc-300 flex-1 min-w-0 truncate">
           Stockfish 18 Lite
         </span>
 
@@ -118,9 +119,9 @@ export function EngineLines({ lines, depth, isComputing, enabled, onToggle, curr
 
       {/* Lines panel */}
       {showLines && (
-        <div className="font-mono">
+        <div className="font-mono px-2 pt-1.5">
           {rendered.length === 0 && isComputing && (
-            <p className="text-[10px] tracking-tight text-zinc-500 animate-pulse leading-none py-0.5">
+            <p className="text-[11px] tracking-tight text-zinc-500 animate-pulse leading-none py-0.5">
               Analysing…
             </p>
           )}
@@ -129,14 +130,14 @@ export function EngineLines({ lines, depth, isComputing, enabled, onToggle, curr
             <div
               key={line.rank}
               className={[
-                'flex gap-1.5 items-baseline py-px',
+                'flex gap-2 items-baseline py-0.5',
                 idx !== 0 ? 'border-t border-zinc-800/60' : '',
               ].join(' ')}
             >
-              <span className={`text-xs font-bold tracking-tighter tabular-nums w-10 shrink-0 leading-none ${evalColor(line)}`}>
+              <span className={`text-xs font-bold tracking-tight tabular-nums w-11 shrink-0 leading-none ${evalColor(line)}`}>
                 {formatScore(line)}
               </span>
-              <span className="text-[11px] tracking-tight leading-none text-zinc-300 truncate">
+              <span className="text-xs tracking-tight leading-tight text-zinc-300 truncate">
                 {line.san}
               </span>
             </div>
@@ -150,7 +151,7 @@ export function EngineLines({ lines, depth, isComputing, enabled, onToggle, curr
               )}
               d{depth || '—'}
             </span>
-            <span>Stockfish 18 Lite</span>
+            <span className="pl-2">Stockfish 18 Lite</span>
           </div>
         </div>
       )}
