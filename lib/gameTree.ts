@@ -17,6 +17,7 @@ export function sanitizePgn(pgn: string): string {
     .replace(/[\u201c\u201d\u201e\u201f\u2033]/g, '"') // curly double quotes / double-prime -> "
     .replace(/[\u2018\u2019\u201a\u201b\u2032]/g, "'") // curly single quotes / prime -> '
     .replace(/[\u200b\u200c\u200d\ufeff]/g, '') // zero-width chars / BOM
+    .replace(/\}\s*\{/g, ' ') // merge adjacent {\u2026} comments (Lichess emits clk + opening on move 1)
     .trim();
 }
 
