@@ -90,68 +90,76 @@ export function FenBar({ currentFen, onFenLoad, onPgnLoad, exportPgn }: FenBarPr
   };
 
   return (
-    <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-1">
+    <details className="group mt-1 rounded-md border border-zinc-800 bg-zinc-900/40">
+      {/* Collapsed by default — click to reveal FEN / PGN tools */}
+      <summary className="flex cursor-pointer list-none select-none items-center gap-2 px-2.5 py-1.5 text-[10px] font-semibold uppercase tracking-widest leading-none text-zinc-500 transition-colors hover:text-zinc-300">
+        <span className="transition-transform group-open:rotate-90">▸</span>
+        FEN / PGN
+      </summary>
 
-      {/* ── FEN column ─────────────────────────────────────────────────────── */}
-      <div className="flex flex-col gap-2">
-        <span className="text-[10px] uppercase tracking-widest font-semibold text-zinc-500 leading-none">FEN</span>
-        <input
-          value={fenInput}
-          onChange={(e) => { setFenInput(e.target.value); setFenError(false); }}
-          onBlur={() => applyFen(fenInput)}
-          onKeyDown={(e) => e.key === 'Enter' && applyFen(fenInput)}
-          spellCheck={false}
-          className={`w-full font-mono text-xs px-2.5 py-2 rounded-md bg-zinc-800/80 border ${
-            fenError ? 'border-red-500 focus:border-red-400' : 'border-zinc-700 focus:border-blue-500'
-          } focus:outline-none text-zinc-300 placeholder:text-zinc-600 transition-colors`}
-          placeholder="Paste FEN to jump to position…"
-        />
-        <button
-          onClick={handleCopyFen}
-          className="flex items-center gap-1.5 self-start px-2.5 py-1.5 rounded-md bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-xs text-zinc-400 hover:text-zinc-200 transition-colors"
-        >
-          <ClipboardIcon />
-          <span>Copy FEN</span>
-        </button>
-      </div>
+      <div className="grid grid-cols-1 gap-2 px-2.5 pb-2.5 pt-0.5 md:grid-cols-2">
 
-      {/* ── PGN column ─────────────────────────────────────────────────────── */}
-      <div className="flex flex-col gap-2">
-        <span className="text-[10px] uppercase tracking-widest font-semibold text-zinc-500 leading-none">PGN</span>
-        <textarea
-          className="w-full font-mono text-xs px-2.5 py-2 rounded-md bg-zinc-800/80 border border-zinc-700 focus:outline-none focus:border-blue-500 resize-none text-zinc-300 placeholder:text-zinc-600 transition-colors"
-          rows={3}
-          placeholder="Paste PGN here…"
-          value={pgnInput}
-          onChange={(e) => setPgnInput(e.target.value)}
-          spellCheck={false}
-        />
-        <div className="flex items-center gap-1.5">
+        {/* ── FEN column ───────────────────────────────────────────────────── */}
+        <div className="flex flex-col gap-1.5">
+          <span className="text-[10px] font-semibold uppercase leading-none tracking-widest text-zinc-500">FEN</span>
+          <input
+            value={fenInput}
+            onChange={(e) => { setFenInput(e.target.value); setFenError(false); }}
+            onBlur={() => applyFen(fenInput)}
+            onKeyDown={(e) => e.key === 'Enter' && applyFen(fenInput)}
+            spellCheck={false}
+            className={`w-full rounded-md border px-2.5 py-1.5 font-mono text-xs leading-tight bg-zinc-800/80 ${
+              fenError ? 'border-red-500 focus:border-red-400' : 'border-zinc-700 focus:border-blue-500'
+            } text-zinc-300 placeholder:text-zinc-600 transition-colors focus:outline-none`}
+            placeholder="Paste FEN to jump to position…"
+          />
           <button
-            onClick={handleCopyPgn}
-            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-xs text-zinc-400 hover:text-zinc-200 transition-colors"
+            onClick={handleCopyFen}
+            className="flex items-center gap-1.5 self-start rounded-md border border-zinc-700 bg-zinc-800 px-2.5 py-1 text-xs leading-none text-zinc-400 transition-colors hover:bg-zinc-700 hover:text-zinc-200"
           >
             <ClipboardIcon />
-            <span>Copy PGN</span>
-          </button>
-          <button
-            onClick={handleLoadPgn}
-            disabled={!pgnInput.trim()}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-          >
-            <UploadIcon />
-            <span>Load PGN</span>
-          </button>
-          <button
-            onClick={handleDownloadPgn}
-            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-xs text-zinc-400 hover:text-zinc-200 transition-colors ml-auto"
-          >
-            <DownloadIcon />
-            <span>Download</span>
+            <span>Copy FEN</span>
           </button>
         </div>
-      </div>
 
-    </div>
+        {/* ── PGN column ───────────────────────────────────────────────────── */}
+        <div className="flex flex-col gap-1.5">
+          <span className="text-[10px] font-semibold uppercase leading-none tracking-widest text-zinc-500">PGN</span>
+          <textarea
+            className="w-full resize-none rounded-md border border-zinc-700 bg-zinc-800/80 px-2.5 py-1.5 font-mono text-xs leading-tight text-zinc-300 placeholder:text-zinc-600 transition-colors focus:border-blue-500 focus:outline-none"
+            rows={2}
+            placeholder="Paste PGN here…"
+            value={pgnInput}
+            onChange={(e) => setPgnInput(e.target.value)}
+            spellCheck={false}
+          />
+          <div className="flex items-center gap-1.5">
+            <button
+              onClick={handleCopyPgn}
+              className="flex items-center gap-1.5 rounded-md border border-zinc-700 bg-zinc-800 px-2.5 py-1 text-xs leading-none text-zinc-400 transition-colors hover:bg-zinc-700 hover:text-zinc-200"
+            >
+              <ClipboardIcon />
+              <span>Copy PGN</span>
+            </button>
+            <button
+              onClick={handleLoadPgn}
+              disabled={!pgnInput.trim()}
+              className="flex items-center gap-1.5 rounded-md bg-blue-600 px-3 py-1 text-xs font-semibold leading-none text-white transition-colors hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              <UploadIcon />
+              <span>Load PGN</span>
+            </button>
+            <button
+              onClick={handleDownloadPgn}
+              className="ml-auto flex items-center gap-1.5 rounded-md border border-zinc-700 bg-zinc-800 px-2.5 py-1 text-xs leading-none text-zinc-400 transition-colors hover:bg-zinc-700 hover:text-zinc-200"
+            >
+              <DownloadIcon />
+              <span>Download</span>
+            </button>
+          </div>
+        </div>
+
+      </div>
+    </details>
   );
 }

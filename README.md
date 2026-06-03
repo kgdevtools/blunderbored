@@ -1,45 +1,50 @@
-# Chess Academy
+# Blunderbored
 
-A chess coaching and training platform built with Next.js 16, React 19, and Stockfish 18.
+A chess board you can use **offline, right in your browser** — with **Stockfish 18 Lite** for engine analysis.
 
-## Features
+## Install & run
 
-| Route | Status |
-|-------|--------|
-| `/board` | ✅ Interactive analysis board with MultiPV engine, eval bar, variations, annotations |
-| `/analysis` | 🔄 Game Reviewer — Lichess-style move quality labels, accuracy scores, K-MAPS commentary |
-| `/puzzle-generator` | 📋 Planned |
-| `/position-trainer` | 📋 Planned |
-| (and more) | 📋 Planned |
-
-## Getting Started
+You'll need [Node.js](https://nodejs.org) (version 20 or newer) installed.
 
 ```bash
+# 1. Download the code
+git clone https://github.com/kgdevtools/blunderbored.git
+cd blunderbored
+
+# 2. Install dependencies
 npm install
+
+# 3. Start it
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000).
+Then open **http://localhost:3000** in your browser.
 
-## Engine Setup
+## Adding games to your library
 
-Stockfish 18 Lite (single-threaded WASM) is required:
+Save any game to your personal library and reopen it whenever you like. You can
+sort games into folders, and they'll still be there next time you visit.
 
-1. Place `stockfish-18-lite-single.js` and `stockfish-18-lite-single.wasm` in `public/engine/`
-2. The files are loaded directly as a Web Worker — no additional config needed
+Everything is kept **on your own device, inside your browser** — nothing is
+uploaded anywhere and only you can see it. (The flip side: it lives in this
+browser only, so clearing the browser's data or switching browsers means
+starting fresh.)
 
-## Opening Book (optional)
+## Using it offline
 
-For book move detection in the Game Reviewer:
+The board itself works without internet once the page has loaded. To make the
+**engine analysis** work offline too, click **"Save for offline"** in the engine
+panel — that keeps a copy of Stockfish (about 7 MB) on your device.
 
-1. Download `gm2600.bin` (Polyglot format, GM 2600+ games)
-2. Place it at `public/books/gm2600.bin`
+## Removing the offline app & Stockfish
 
-Without the book file, the Game Reviewer falls back to an opening-phase heuristic.
+To free up the space or remove it completely:
 
-## Project Docs
+1. **If you installed it** to your home screen or desktop, uninstall it like any
+   other app.
+2. **Clear the saved data:** in your browser settings, find the site data /
+   storage for this site and choose **Clear** (or **Delete data**). That removes
+   the saved Stockfish engine, your game library, and the offline copy of the app.
 
-- [`BOARD_PLAN.md`](BOARD_PLAN.md) — Board feature architecture
-- [`GAME_REVIEWER_PLAN.md`](GAME_REVIEWER_PLAN.md) — Game Reviewer feature plan
-- [`PUZZLE_GENERATOR_PLAN.md`](PUZZLE_GENERATOR_PLAN.md) — Puzzle Generator feature plan
-- [`ANALYSIS_PIPELINE_SUMMARY.md`](ANALYSIS_PIPELINE_SUMMARY.md) — Project overview & file map
+   In Chrome it's quickest from the site itself: click the padlock icon in the
+   address bar → **Site settings** → **Delete data**.

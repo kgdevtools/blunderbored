@@ -39,3 +39,7 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# markdown — internal notes/plans stay local; keep the reader-facing README
+*.md
+!README.md

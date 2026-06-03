@@ -20,105 +20,49 @@ import { LibraryModal } from './LibraryModal';
 import { saveGame, updateGame, serializeBoardState, checkDuplicate, saveDraft, loadDraft, clearDraft } from '@/lib/library';
 import type { LibraryGame } from '@/lib/db';
 
-// ─── Icons ────────────────────────────────────────────────────────────────────
-
-function PlusIcon() {
-  return (
-    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-      <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
-    </svg>
-  );
-}
-
-function BookIcon() {
-  return (
-    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
-      <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
-    </svg>
-  );
-}
-
 // ─── Game info header ─────────────────────────────────────────────────────────
 
+// Game-data and Library actions now live in the ··· menu. This component just
+// renders the rich player card when the loaded game has player metadata, and
+// stays out of the way otherwise. Clicking the card opens the editor.
 function GameInfoHeader({
   headers,
   onOpen,
-  onOpenLibrary,
-  isLoaded,
 }: {
   headers: Record<string, string>;
   onOpen: () => void;
-  onOpenLibrary: () => void;
-  isLoaded: boolean;
 }) {
   const { White: white, Black: black, WhiteElo: wElo, BlackElo: bElo, Result: result, Event: event, Date: date } = headers;
   const hasPlayers = white || black;
 
-  if (!hasPlayers) {
-    return (
-      <div className="flex items-center gap-2 mb-2">
-        <button
-          onClick={onOpen}
-          className="flex items-center gap-1.5 text-md text-zinc-500 hover:text-zinc-300 transition-colors py-0.5"
-        >
-          <PlusIcon />
-          <span>Add Game Data</span>
-        </button>
-        <button
-          onClick={onOpenLibrary}
-          className={`flex items-center gap-1.5 text-xs transition-colors py-0.5 ml-auto
-            ${isLoaded ? 'text-emerald-500 hover:text-emerald-300' : 'text-zinc-500 hover:text-zinc-300'}`}
-        >
-          <BookIcon />
-          <span>{isLoaded ? 'Update Library' : 'Library'}</span>
-        </button>
-      </div>
-    );
-  }
+  if (!hasPlayers) return null;
 
   return (
     <div className="w-full mb-2 rounded overflow-hidden border border-zinc-700/60 hover:border-zinc-600 transition-colors">
-      {/* Player row */}
-      <div className="flex items-stretch">
-        {/* Clickable zone: white + result + black */}
-        <div
-          role="button"
-          tabIndex={0}
-          onClick={onOpen}
-          onKeyDown={(e) => e.key === 'Enter' && onOpen()}
-          className="flex flex-1 items-stretch cursor-pointer min-w-0"
-        >
-          {/* White */}
-          <div className="flex-1 min-w-0 bg-zinc-100 flex items-center gap-1.5 px-2.5 py-2.5">
-            <span className="text-sm font-bold text-zinc-900 truncate">{white ?? '?'}</span>
-            {wElo && <span className="text-xs text-zinc-500 tabular-nums shrink-0">{wElo}</span>}
-          </div>
-
-          {/* Result */}
-          <div className="px-3 flex items-center justify-center bg-zinc-800 shrink-0">
-            <span className="text-sm font-bold text-cyan-400 tabular-nums">{result ?? '–'}</span>
-          </div>
-
-          {/* Black */}
-          <div className="flex-1 min-w-0 bg-zinc-950 flex items-center justify-end gap-1.5 px-2.5 py-2.5">
-            {bElo && <span className="text-xs text-zinc-500 tabular-nums shrink-0">{bElo}</span>}
-            <span className="text-sm font-bold text-zinc-100 truncate">{black ?? '?'}</span>
-          </div>
+      {/* Player row — clickable to edit game data */}
+      <div
+        role="button"
+        tabIndex={0}
+        onClick={onOpen}
+        onKeyDown={(e) => e.key === 'Enter' && onOpen()}
+        className="flex items-stretch cursor-pointer min-w-0"
+      >
+        {/* White */}
+        <div className="flex-1 min-w-0 bg-zinc-100 flex items-center gap-1.5 px-2.5 py-2.5">
+          <span className="text-sm font-bold text-zinc-900 truncate">{white ?? '?'}</span>
+          {wElo && <span className="text-xs text-zinc-500 tabular-nums shrink-0">{wElo}</span>}
         </div>
 
-        {/* Library icon — standalone, stops propagation */}
-        <button
-          onClick={(e) => { e.stopPropagation(); onOpenLibrary(); }}
-          className={`flex items-center justify-center px-3 bg-zinc-800 hover:bg-zinc-700 transition-colors shrink-0 border-l border-zinc-700/50
-            ${isLoaded ? 'text-cyan-400 hover:text-cyan-300' : 'text-cyan-700 hover:text-cyan-400'}`}
-          title={isLoaded ? 'Update in Library' : 'Library'}
-        >
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
-            <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
-          </svg>
-        </button>
+        {/* Result */}
+        <div className="px-3 flex items-center justify-center bg-zinc-800 shrink-0">
+          <span className="text-sm font-bold text-cyan-400 tabular-nums">{result ?? '–'}</span>
+        </div>
+
+        {/* Black */}
+        <div className="flex-1 min-w-0 bg-zinc-950 flex items-center justify-end gap-1.5 px-2.5 py-2.5">
+          {bElo && <span className="text-xs text-zinc-500 tabular-nums shrink-0">{bElo}</span>}
+          <span className="text-sm font-bold text-zinc-100 truncate">{black ?? '?'}</span>
+        </div>
       </div>
 
       {/* Event / Date row */}
@@ -363,6 +307,16 @@ export function BoardShell({ initialPgn, initialFen }: BoardShellProps) {
     setLoadedFromLibraryId(null);
   }, [game]);
 
+  const handleNewGame = useCallback(() => {
+    game.newGame();
+    setLoadedFromLibraryId(null);
+  }, [game]);
+
+  const openLibrary = useCallback((mode: 'browse' | 'save') => {
+    setLibraryMode(mode);
+    setShowLibrary(true);
+  }, []);
+
   // ── Click-to-move ──────────────────────────────────────────────────────────
   const [selectedSq, setSelectedSq] = useState<Square | null>(null);
   const [pendingPromo, setPendingPromo] = useState<{ from: Square; to: Square } | null>(null);
@@ -559,7 +513,7 @@ export function BoardShell({ initialPgn, initialFen }: BoardShellProps) {
           style={isDesktop && boardWidth > 0 ? { height: boardWidth } : undefined}
         >
           {/* Controls — first on mobile (order-1), last on desktop (order-3) */}
-          <div className="order-1 lg:order-3 shrink-0">
+          <div className="order-1 lg:order-3 shrink-0 px-2">
             <BoardControls
               onStart={game.goStart}
               onPrev={game.goPrev}
@@ -569,6 +523,11 @@ export function BoardShell({ initialPgn, initialFen }: BoardShellProps) {
               canPrev={canPrev}
               canNext={canNext}
               exportPgn={game.exportPgn}
+              onNewGame={handleNewGame}
+              onAddGameData={() => setShowGameInfo(true)}
+              onSaveToLibrary={() => openLibrary('save')}
+              onOpenLibrary={() => openLibrary('browse')}
+              isLoaded={!!loadedFromLibraryId}
             />
           </div>
 
@@ -577,11 +536,6 @@ export function BoardShell({ initialPgn, initialFen }: BoardShellProps) {
             <GameInfoHeader
               headers={game.headers}
               onOpen={() => setShowGameInfo(true)}
-              onOpenLibrary={() => {
-                setLibraryMode(loadedFromLibraryId ? 'save' : 'browse');
-                setShowLibrary(true);
-              }}
-              isLoaded={!!loadedFromLibraryId}
             />
             <MovesList
               tokens={game.tokens}

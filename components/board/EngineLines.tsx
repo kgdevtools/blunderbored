@@ -73,13 +73,13 @@ export function EngineLines({ lines, depth, isComputing, enabled, onToggle, curr
   return (
     <div className="border-t border-zinc-700 pt-2 mt-2">
       {/* Header */}
-      <div className="flex items-center gap-1.5 mb-1">
+      <div className="flex flex-wrap items-center gap-1.5 mb-1">
         {/* Eval score — prominent */}
         <span className={`font-mono font-bold text-sm tracking-tight tabular-nums ${enabled && headerScore ? headerScoreColor : 'text-zinc-600'}`}>
           {enabled && headerScore ? headerScore : '—'}
         </span>
         {/* Engine label — subordinate */}
-        <span className="text-[10px] tracking-tight text-zinc-500 flex-1 leading-none">
+        <span className="text-[10px] tracking-tight text-zinc-500 flex-1 min-w-0 truncate leading-none">
           Stockfish 18 Lite
         </span>
 
@@ -111,10 +111,10 @@ export function EngineLines({ lines, depth, isComputing, enabled, onToggle, curr
         >
           {linesVisible ? 'Hide Lines' : 'Show Engine Lines'}
         </button>
-      </div>
 
-      {/* Pre-download the engine so analysis works offline */}
-      <EngineOfflineButton />
+        {/* Offline-save control — pre-downloads the engine so analysis works offline */}
+        <EngineOfflineButton />
+      </div>
 
       {/* Lines panel */}
       {showLines && (

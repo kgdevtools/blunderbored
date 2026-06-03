@@ -100,6 +100,17 @@ export function useBoardGame() {
     setNodeCommentsMap(new Map());
   }, []);
 
+  // Fresh start: reset to the initial position and clear all game metadata.
+  const newGame = useCallback(() => {
+    const newRoot = createRootNode(DEFAULT_POSITION);
+    setRoot(newRoot);
+    setCurrent(newRoot);
+    setTreeVersion(0);
+    setAnnotations(new Map());
+    setNodeCommentsMap(new Map());
+    setHeadersState({});
+  }, []);
+
   const setNodeComment = useCallback((nodeId: string, text: string) => {
     setNodeCommentsMap(prev => {
       const next = new Map(prev);
@@ -287,6 +298,7 @@ export function useBoardGame() {
     setHeader,
     loadPgn,
     loadFen,
+    newGame,
     makeMove,
     goTo,
     goStart,
