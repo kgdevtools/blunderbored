@@ -1,5 +1,5 @@
 'use client';
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import type { LibraryGame } from '@/lib/db';
 import { useFolderPath } from '@/hooks/useLibrary';
 import { LibraryFolderTree } from './LibraryFolderTree';
@@ -86,6 +86,24 @@ export function LibraryModal({ mode, onSaveHere, onLoad, onClose }: LibraryModal
   const [tab, setTab] = useState<Tab>('folders');
   const activeTab: Tab = mode === 'save' ? 'folders' : tab;
 
+  // Resizable split between the folder tree and the game list.
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const dragging = useRef(false);
+  const [leftWidth, setLeftWidth] = useState(220);
+
+  useEffect(() => {
+    const onMove = (e: PointerEvent) => {
+      if (!dragging.current || !bodyRef.current) return;
+      const rect = bodyRef.current.getBoundingClientRect();
+      const w = e.clientX - rect.left;
+      setLeftWidth(Math.max(150, Math.min(w, rect.width - 240)));
+    };
+    const onUp = () => { dragging.current = false; document.body.style.cursor = ''; };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    return () => { window.removeEventListener('pointermove', onMove); window.removeEventListener('pointerup', onUp); };
+  }, []);
+
   // Close on Escape
   useEffect(() => {
     const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
@@ -104,7 +122,7 @@ export function LibraryModal({ mode, onSaveHere, onLoad, onClose }: LibraryModal
       onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
       {/* Dialog */}
-      <div className="flex flex-col w-full max-w-3xl bg-zinc-900 border border-zinc-700 rounded-lg shadow-2xl overflow-hidden"
+      <div className="flex flex-col w-full max-w-4xl bg-zinc-900 border border-zinc-700 rounded-lg shadow-2xl overflow-hidden"
         style={{ height: 'min(600px, 90vh)' }}
       >
         {/* ── Header bar ────────────────────────────────────────────────── */}
@@ -157,9 +175,12 @@ export function LibraryModal({ mode, onSaveHere, onLoad, onClose }: LibraryModal
 
         {/* ── Body ───────────────────────────────────────────────────────── */}
         {activeTab === 'folders' && (
-          <div className="flex flex-1 min-h-0">
-            {/* Left: folder tree */}
-            <div className="w-44 shrink-0 border-r border-zinc-700/80 overflow-y-auto bg-zinc-900/30">
+          <div ref={bodyRef} className="flex flex-1 min-h-0">
+            {/* Left: folder tree (resizable) */}
+            <div
+              style={{ width: leftWidth }}
+              className="shrink-0 border-r border-zinc-700/80 overflow-y-auto bg-zinc-900/30"
+            >
               <LibraryFolderTree
                 selectedFolderId={selectedFolderId}
                 onSelect={setSelectedFolderId}
@@ -167,6 +188,13 @@ export function LibraryModal({ mode, onSaveHere, onLoad, onClose }: LibraryModal
                 mode={mode}
               />
             </div>
+
+            {/* Drag handle */}
+            <div
+              onPointerDown={() => { dragging.current = true; document.body.style.cursor = 'col-resize'; }}
+              className="w-1 shrink-0 cursor-col-resize bg-zinc-800 hover:bg-blue-500/60 active:bg-blue-500 transition-colors"
+              title="Drag to resize"
+            />
 
             {/* Right: game list */}
             <div className="flex-1 min-w-0 overflow-y-auto">

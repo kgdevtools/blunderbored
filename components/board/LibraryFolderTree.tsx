@@ -1,8 +1,9 @@
 'use client';
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useFolderChildren, useFolderGames } from '@/hooks/useLibrary';
-import { createFolder, renameFolder, deleteFolder } from '@/lib/library';
+import { createFolder, renameFolder, deleteFolder, saveGame, updateGame, deriveTitle } from '@/lib/library';
 import type { LibraryFolder, LibraryGame } from '@/lib/db';
+import { GameInfoModal } from './GameInfoModal';
 
 // ─── Icons ────────────────────────────────────────────────────────────────────
 
@@ -38,6 +39,16 @@ function PlusIcon() {
   return (
     <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
       <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
+    </svg>
+  );
+}
+
+function FilePlusIcon() {
+  return (
+    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+      <polyline points="14 2 14 8 20 8" />
+      <line x1="12" y1="12" x2="12" y2="18" /><line x1="9" y1="15" x2="15" y2="15" />
     </svg>
   );
 }
@@ -112,6 +123,7 @@ interface TreeState {
   onOpenContextMenu: (id: string, x: number, y: number) => void;
   onCloseContextMenu: () => void;
   onAddFolder: (parentId: string | null, depth: number) => void;
+  onAddGame: (folderId: string) => void;
   onLoad: (game: LibraryGame) => void;
 }
 
@@ -219,16 +231,27 @@ function FolderRow({
 
       <span className="flex-1 truncate">{folder.name}</span>
 
-      {/* Add sub-folder — hidden at depth 3 */}
-      {folder.depth < 3 && (
+      {/* Row actions — revealed on hover */}
+      <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-all">
+        {/* New game (file) — opens Game Data to enter metadata */}
         <button
-          className="opacity-0 group-hover:opacity-100 p-0.5 rounded text-zinc-400 hover:text-zinc-100 hover:bg-zinc-600 transition-all"
-          title="New sub-folder"
-          onClick={(e) => { e.stopPropagation(); tree.onAddFolder(folder.id, folder.depth + 1); }}
+          className="p-0.5 rounded text-zinc-400 hover:text-zinc-100 hover:bg-zinc-600 transition-colors"
+          title="New game in this folder"
+          onClick={(e) => { e.stopPropagation(); tree.onAddGame(folder.id); }}
         >
-          <PlusIcon />
+          <FilePlusIcon />
         </button>
-      )}
+        {/* New sub-folder — hidden at depth 3 */}
+        {folder.depth < 3 && (
+          <button
+            className="p-0.5 rounded text-zinc-400 hover:text-zinc-100 hover:bg-zinc-600 transition-colors"
+            title="New sub-folder"
+            onClick={(e) => { e.stopPropagation(); tree.onAddFolder(folder.id, folder.depth + 1); }}
+          >
+            <PlusIcon />
+          </button>
+        )}
+      </div>
     </div>
   );
 }
@@ -236,16 +259,16 @@ function FolderRow({
 // ─── Game item in tree ────────────────────────────────────────────────────────
 
 function GameItem({ game, folderDepth, tree }: { game: LibraryGame; folderDepth: number; tree: TreeState }) {
-  // Indent: one level deeper than the containing folder
-  const paddingLeft = 8 + folderDepth * 14 + 14; // extra 14 skips the chevron column
+  // Align just inside the parent folder's name (chevron + folder-icon column),
+  // without the extra indent that was crowding the names off-screen.
+  const paddingLeft = 8 + (folderDepth - 1) * 14 + 16;
   return (
     <div
-      className="flex items-center gap-1 px-2 py-1 cursor-pointer select-none text-[11px] leading-none tracking-tight text-zinc-500 hover:bg-zinc-800 hover:text-zinc-400 transition-colors"
+      className="flex items-center gap-1.5 pr-2 py-1 cursor-pointer select-none text-[11px] leading-none tracking-tight text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 transition-colors"
       style={{ paddingLeft }}
       onClick={() => tree.onLoad(game)}
       title={game.title}
     >
-      <span className="w-3 shrink-0" />
       <PawnIcon />
       <span className="flex-1 truncate">{game.title}</span>
     </div>
@@ -292,6 +315,28 @@ function FolderList({ parentId, tree, depth = 0 }: { parentId: string | null; tr
   );
 }
 
+// ─── New-game metadata overlay ────────────────────────────────────────────────
+// Created game already exists in the folder; this lets the user fill in its
+// metadata (and thus its title) before it settles in the list.
+
+function NewGameOverlay({ game, onClose }: { game: LibraryGame; onClose: () => void }) {
+  const [localHeaders, setLocalHeaders] = useState<Record<string, string>>({ ...game.headers });
+
+  const setHeader = useCallback((key: string, value: string) => {
+    setLocalHeaders(prev => {
+      if (value === '') { const next = { ...prev }; delete next[key]; return next; }
+      return { ...prev, [key]: value };
+    });
+  }, []);
+
+  const handleClose = useCallback(async () => {
+    await updateGame(game.id, { headers: localHeaders, title: deriveTitle(localHeaders) });
+    onClose();
+  }, [game.id, localHeaders, onClose]);
+
+  return <GameInfoModal headers={localHeaders} onSetHeader={setHeader} onClose={handleClose} />;
+}
+
 // ─── LibraryFolderTree ────────────────────────────────────────────────────────
 
 export function LibraryFolderTree({
@@ -308,6 +353,7 @@ export function LibraryFolderTree({
   const [renamingId, setRenamingId] = useState('');
   const [deletingId, setDeletingId] = useState('');
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
+  const [newGame, setNewGame] = useState<LibraryGame | null>(null);
 
   const onToggle = useCallback((id: string) => {
     setExpandedIds((prev) => {
@@ -329,6 +375,26 @@ export function LibraryFolderTree({
     }
   }, [onSelect]);
 
+  const onAddGame = useCallback(async (folderId: string) => {
+    try {
+      // Create a placeholder game ('*' = no moves yet), then collect its metadata.
+      const game = await saveGame({
+        folderId,
+        title: 'New Game',
+        pgn: '*',
+        headers: {},
+        nodeComments: {},
+        annotations: {},
+        reviewData: null,
+      });
+      setExpandedIds((prev) => new Set([...prev, folderId]));
+      onSelect(folderId);
+      setNewGame(game);
+    } catch (err) {
+      console.error(err);
+    }
+  }, [onSelect]);
+
   const tree: TreeState = {
     selectedFolderId,
     expandedIds,
@@ -343,6 +409,7 @@ export function LibraryFolderTree({
     onOpenContextMenu: (id, x, y) => setContextMenu({ id, x, y }),
     onCloseContextMenu: () => setContextMenu(null),
     onAddFolder,
+    onAddGame,
   };
 
   return (
@@ -372,6 +439,9 @@ export function LibraryFolderTree({
           onClose={() => setContextMenu(null)}
         />
       )}
+
+      {/* New-game metadata entry */}
+      {newGame && <NewGameOverlay game={newGame} onClose={() => setNewGame(null)} />}
     </div>
   );
 }

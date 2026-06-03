@@ -1,5 +1,5 @@
 'use client';
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useCallback } from 'react';
 import { useFolderGames } from '@/hooks/useLibrary';
 import { updateGame, deleteGame, saveGame, checkDuplicate, parsePgnGames, deriveTitle } from '@/lib/library';
 import type { LibraryGame } from '@/lib/db';
@@ -75,122 +75,81 @@ function GameRow({
   onLoad: (g: LibraryGame) => void;
   onSaveHere: () => void;
 }) {
-  const [isRenaming, setIsRenaming] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [isEditingHeaders, setIsEditingHeaders] = useState(false);
-  const [renameVal, setRenameVal] = useState(game.title);
-  const inputRef = useRef<HTMLInputElement>(null);
 
-  useEffect(() => {
-    if (isRenaming) {
-      setRenameVal(game.title);
-      setTimeout(() => inputRef.current?.select(), 0);
-    }
-  }, [isRenaming, game.title]);
-
-  const commitRename = useCallback(async () => {
-    const trimmed = renameVal.trim();
-    if (trimmed && trimmed !== game.title) {
-      await updateGame(game.id, { title: trimmed });
-    }
-    setIsRenaming(false);
-  }, [renameVal, game.id, game.title]);
-
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter') { e.preventDefault(); commitRename(); }
-    if (e.key === 'Escape') setIsRenaming(false);
-  };
-
-  const white = game.headers.White?.trim() || '?';
-  const black = game.headers.Black?.trim() || '?';
-  const subtitle = white === '?' && black === '?' ? null : `${white} vs ${black}`;
+  // Secondary line: real context (event / opening) rather than repeating the
+  // players, which are already the title.
+  const detail = [game.headers.Event, game.headers.Opening || game.headers.ECO]
+    .filter((s) => s && s.trim())
+    .join('  ·  ');
 
   // ── Deleting confirmation ────────────────────────────────────────────────
   if (isDeleting) {
     return (
-      <div className="flex items-center gap-2 px-3 py-1.5 text-[11px] bg-red-950/40 border-y border-red-800/40">
-        <span className="text-red-300 flex-1 min-w-0 truncate leading-none">Delete &ldquo;{game.title}&rdquo;?</span>
+      <div className="flex items-center gap-2 px-4 py-2 text-xs bg-red-950/40 border-y border-red-800/40">
+        <span className="text-red-300 flex-1 min-w-0 truncate">Delete &ldquo;{game.title}&rdquo;?</span>
         <button
-          className="px-1.5 py-0.5 rounded bg-red-600 hover:bg-red-500 text-white text-[10px] font-semibold leading-none shrink-0 transition-colors"
+          className="px-2 py-0.5 rounded bg-red-600 hover:bg-red-500 text-white text-[11px] font-semibold shrink-0 transition-colors"
           onClick={async () => { await deleteGame(game.id); setIsDeleting(false); }}
-        >Yes</button>
+        >Delete</button>
         <button
-          className="px-1.5 py-0.5 rounded bg-zinc-700 hover:bg-zinc-600 text-zinc-300 text-[10px] leading-none shrink-0 transition-colors"
+          className="px-2 py-0.5 rounded bg-zinc-700 hover:bg-zinc-600 text-zinc-300 text-[11px] shrink-0 transition-colors"
           onClick={() => setIsDeleting(false)}
-        >No</button>
+        >Cancel</button>
       </div>
     );
   }
 
-  // ── Renaming ─────────────────────────────────────────────────────────────
-  if (isRenaming) {
-    return (
-      <div className="flex items-center gap-2 px-3 py-1.5 border-b border-zinc-700/50">
-        <input
-          ref={inputRef}
-          value={renameVal}
-          onChange={(e) => setRenameVal(e.target.value)}
-          onKeyDown={handleKeyDown}
-          onBlur={commitRename}
-          className="flex-1 bg-zinc-700 border border-zinc-500 rounded px-2 py-0.5 text-[11px] text-zinc-100 outline-none focus:border-blue-400"
-          autoFocus
-        />
-      </div>
-    );
-  }
+  const clickable = mode === 'browse';
 
   // ── Normal ────────────────────────────────────────────────────────────────
   return (
     <>
-      <div className="group flex items-center gap-2 px-3 py-1.5 border-b border-zinc-700/40 hover:bg-zinc-800/50 transition-colors">
-        {/* Index number */}
-        <span className="text-[10px] tabular-nums text-zinc-600 shrink-0 w-4 text-right leading-none">{index}.</span>
+      <div
+        className={`group flex items-center gap-3 px-4 py-2 border-b border-zinc-800/70 transition-colors ${clickable ? 'cursor-pointer hover:bg-zinc-800/60' : 'hover:bg-zinc-800/30'}`}
+        onClick={clickable ? () => onLoad(game) : undefined}
+        title={clickable ? 'Open game' : undefined}
+      >
+        {/* Index */}
+        <span className="text-xs tabular-nums text-zinc-600 shrink-0 w-5 text-right">{index}.</span>
 
-        {/* Text */}
+        {/* Title + context */}
         <div className="flex-1 min-w-0">
-          <div
-            className="text-xs font-semibold tracking-tight leading-none text-zinc-200 truncate cursor-default"
-            onDoubleClick={() => setIsRenaming(true)}
-            title="Double-click to rename"
-          >
+          <div className="text-sm font-semibold tracking-tight text-zinc-100 truncate">
             {game.title}
           </div>
-          {subtitle && (
-            <div className="text-[11px] tracking-tight text-zinc-500 truncate mt-0.5 leading-none">{subtitle}</div>
+          {detail && (
+            <div className="text-[11px] tracking-tight text-zinc-500 truncate mt-0.5">{detail}</div>
           )}
         </div>
 
-        {/* Badges + actions */}
-        <div className="flex items-center gap-1 shrink-0">
+        {/* Result + date */}
+        <div className="flex items-center gap-2 shrink-0">
           <ResultBadge result={game.headers.Result} />
-          <span className="text-[11px] font-semibold text-zinc-500 tabular-nums tracking-tight hidden sm:block">
+          <span className="text-[11px] text-zinc-500 tabular-nums tracking-tight w-20 text-right hidden sm:block">
             {formatDate(game.updatedAt)}
           </span>
+        </div>
 
-          {/* Hover actions */}
-          <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
-            {mode === 'save' ? (
-              <button
-                onClick={onSaveHere}
-                className="px-1.5 py-0.5 rounded bg-emerald-700 hover:bg-emerald-600 text-white text-[10px] font-semibold leading-none transition-colors"
-              >Update</button>
-            ) : (
-              <button
-                onClick={() => onLoad(game)}
-                className="px-1.5 py-0.5 rounded bg-blue-700 hover:bg-blue-600 text-white text-[10px] font-semibold leading-none transition-colors"
-              >Load</button>
-            )}
+        {/* Actions — always visible on touch, hover-revealed on desktop */}
+        <div className="flex items-center gap-1 shrink-0 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity">
+          {mode === 'save' && (
             <button
-              onClick={() => setIsEditingHeaders(true)}
-              className="px-1.5 py-0.5 rounded bg-zinc-700 hover:bg-zinc-600 text-zinc-300 text-[10px] leading-none transition-colors"
-              title="Edit headers"
-            >Edit</button>
-            <button
-              onClick={() => setIsDeleting(true)}
-              className="px-1 py-0.5 rounded bg-zinc-700 hover:bg-red-800 text-zinc-500 hover:text-white text-[10px] leading-none transition-colors"
-              title="Delete"
-            >✕</button>
-          </div>
+              onClick={(e) => { e.stopPropagation(); onSaveHere(); }}
+              className="px-2 py-1 rounded bg-emerald-700 hover:bg-emerald-600 text-white text-[11px] font-semibold leading-none transition-colors"
+            >Update</button>
+          )}
+          <button
+            onClick={(e) => { e.stopPropagation(); setIsEditingHeaders(true); }}
+            className="px-2.5 py-1 rounded text-[11px] font-medium leading-none text-zinc-300 bg-zinc-800 hover:bg-zinc-700 hover:text-zinc-100 transition-colors"
+            title="Edit game data"
+          >Edit</button>
+          <button
+            onClick={(e) => { e.stopPropagation(); setIsDeleting(true); }}
+            className="px-2.5 py-1 rounded text-[11px] font-medium leading-none text-red-400/80 bg-zinc-800 hover:bg-red-900/60 hover:text-red-300 transition-colors"
+            title="Delete game"
+          >Delete</button>
         </div>
       </div>
 
