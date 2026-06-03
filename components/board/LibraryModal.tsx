@@ -4,6 +4,10 @@ import type { LibraryGame } from '@/lib/db';
 import { useFolderPath } from '@/hooks/useLibrary';
 import { LibraryFolderTree } from './LibraryFolderTree';
 import { LibraryGameList } from './LibraryGameList';
+import { ConceptList } from './ConceptList';
+import { GraphView } from './GraphView';
+
+type Tab = 'folders' | 'concepts' | 'graph';
 
 // ─── Icons ────────────────────────────────────────────────────────────────────
 
@@ -78,6 +82,9 @@ interface LibraryModalProps {
 
 export function LibraryModal({ mode, onSaveHere, onLoad, onClose }: LibraryModalProps) {
   const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null);
+  // Tabs only apply when browsing; saving is always folder-picking.
+  const [tab, setTab] = useState<Tab>('folders');
+  const activeTab: Tab = mode === 'save' ? 'folders' : tab;
 
   // Close on Escape
   useEffect(() => {
@@ -130,28 +137,60 @@ export function LibraryModal({ mode, onSaveHere, onLoad, onClose }: LibraryModal
           </div>
         </div>
 
-        {/* ── Two-panel body ─────────────────────────────────────────────── */}
-        <div className="flex flex-1 min-h-0">
-          {/* Left: folder tree */}
-          <div className="w-44 shrink-0 border-r border-zinc-700/80 overflow-y-auto bg-zinc-900/30">
-            <LibraryFolderTree
-              selectedFolderId={selectedFolderId}
-              onSelect={setSelectedFolderId}
-              onLoad={(game) => { onLoad(game); onClose(); }}
-              mode={mode}
-            />
+        {/* ── Tab strip (browse only) ────────────────────────────────────── */}
+        {mode === 'browse' && (
+          <div className="flex gap-1 px-3 py-1.5 border-b border-zinc-800 shrink-0">
+            {(['folders', 'concepts', 'graph'] as const).map((t) => (
+              <button
+                key={t}
+                onClick={() => setTab(t)}
+                className={[
+                  'px-2.5 py-1 rounded text-[11px] font-medium capitalize transition-colors',
+                  activeTab === t ? 'bg-zinc-700 text-zinc-100' : 'text-zinc-400 hover:bg-zinc-800',
+                ].join(' ')}
+              >
+                {t}
+              </button>
+            ))}
           </div>
+        )}
 
-          {/* Right: game list */}
-          <div className="flex-1 min-w-0 overflow-y-auto">
-            <LibraryGameList
-              folderId={selectedFolderId}
-              mode={mode}
-              onLoad={(game) => { onLoad(game); onClose(); }}
-              onSaveHere={handleSaveHere}
-            />
+        {/* ── Body ───────────────────────────────────────────────────────── */}
+        {activeTab === 'folders' && (
+          <div className="flex flex-1 min-h-0">
+            {/* Left: folder tree */}
+            <div className="w-44 shrink-0 border-r border-zinc-700/80 overflow-y-auto bg-zinc-900/30">
+              <LibraryFolderTree
+                selectedFolderId={selectedFolderId}
+                onSelect={setSelectedFolderId}
+                onLoad={(game) => { onLoad(game); onClose(); }}
+                mode={mode}
+              />
+            </div>
+
+            {/* Right: game list */}
+            <div className="flex-1 min-w-0 overflow-y-auto">
+              <LibraryGameList
+                folderId={selectedFolderId}
+                mode={mode}
+                onLoad={(game) => { onLoad(game); onClose(); }}
+                onSaveHere={handleSaveHere}
+              />
+            </div>
           </div>
-        </div>
+        )}
+
+        {activeTab === 'concepts' && (
+          <div className="flex-1 min-h-0 overflow-y-auto">
+            <ConceptList />
+          </div>
+        )}
+
+        {activeTab === 'graph' && (
+          <div className="flex-1 min-h-0">
+            <GraphView onOpenGame={(game) => { onLoad(game); onClose(); }} />
+          </div>
+        )}
       </div>
     </div>
   );
