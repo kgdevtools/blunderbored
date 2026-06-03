@@ -284,7 +284,10 @@ export function LibraryGameList({ folderId, mode, onLoad, onSaveHere }: LibraryG
         <input
           ref={fileInputRef}
           type="file"
-          accept=".pgn,.txt"
+          // Broad accept so the OS file dialog never greys out a valid .pgn
+          // (some Linux/Chromium pickers filter by MIME, not extension). The
+          // parser validates content regardless.
+          accept=".pgn,.PGN,.txt,application/x-chess-pgn,application/vnd.chess-pgn,application/octet-stream,text/plain"
           className="hidden"
           onChange={handleImportPgn}
         />
