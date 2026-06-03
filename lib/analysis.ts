@@ -34,6 +34,8 @@ export interface ReviewedMove {
   winPctLoss:   number;   // 0–100
   moveAccuracy: number;   // 0–100
   isBook:       boolean;
+  best?:        boolean;  // played the engine's top move (not book)
+  missedMate?:  boolean;  // a forced mate was available but let go
   kmaps:        KmapsResult;
 }
 
@@ -146,30 +148,37 @@ export async function analyseGame(
       ? uciToSan(fenBefore, bestMoveUci)
       : '';
 
-    // Book detection: Polyglot only — no heuristic fallback.
-    // If the book file didn't load we simply skip book labels rather than guess.
+    // Book detection. Primary: Polyglot .bin (exact). Fallback when the .bin
+    // isn't loaded: a conservative, file-free heuristic — a near-best move still
+    // in the opening is treated as theory rather than flagged. The .bin
+    // supersedes this once shipped.
     let isBook = false;
     if (isBookAvailable()) {
       const bookMoves = await getBookMoves(fenBefore);
       isBook = bookMoves.includes(playedUci);
+    } else if (phase === 'opening' && i < 16 && Math.max(0, winPctLoss) < 5) {
+      isBook = true;
     }
 
-    // Decided-position suppression: when a position is already clearly won/lost
-    // and stays clearly decided in the same direction, harsh labels are misleading.
-    // Only apply labels when the eval genuinely swings toward balanced territory.
-    //   DECIDED_CP   — "this side is clearly winning" threshold (±5 pawns)
-    //   STILL_WON_CP — "still clearly winning after the move" threshold (±3 pawns)
-    const DECIDED_CP   = 500;
-    const STILL_WON_CP = 300;
-    const priorSide = evalBefore >  DECIDED_CP ? 1 : evalBefore < -DECIDED_CP ? -1 : 0;
-    const afterSide = evalAfter  >  STILL_WON_CP ? 1 : evalAfter < -STILL_WON_CP ? -1 : 0;
-    const positionStaysDecided = priorSide !== 0 && priorSide === afterSide;
-
+    // Classify purely by win%-loss (Lichess-calibrated). The curve self-damps in
+    // won positions (a 200cp swing at +9 is a ~3% drop), so no decided-position
+    // suppression is needed — and real throws while winning are correctly flagged.
     const quality: MoveQuality = isBook
       ? 'book'
-      : positionStaysDecided
-      ? 'good'
       : classifyQuality(Math.max(0, winPctLoss));
+
+    // Positive label: played the engine's top move (and it isn't book). Free —
+    // we already have the depth-18 best move.
+    const best = !isBook && bestMoveUci !== '' && bestMoveUci === playedUci;
+
+    // Missed forced mate: a mate (≤ N) was available before but the played move
+    // let it slip. Mate sign is from the side-to-move's perspective.
+    const MATE_BOUND = 10;
+    const mateBefore = evals[i].mate;
+    const mateAfter  = evals[i + 1].mate;
+    const hadMate  = mateBefore != null && mateBefore > 0 && mateBefore <= MATE_BOUND;
+    const keptMate = mateAfter  != null && mateAfter  < 0; // opponent (to move) is getting mated
+    const missedMate = hadMate && !keptMate && !best;
 
     // K-MAPS on the resulting position
     const kmaps = kmapsAnalyse(fenAfter);
@@ -190,6 +199,8 @@ export async function analyseGame(
       winPctLoss:   Math.max(0, winPctLoss),
       moveAccuracy: accuracy,
       isBook,
+      best,
+      missedMate,
       kmaps,
     });
   }
