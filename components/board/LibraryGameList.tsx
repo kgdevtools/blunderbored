@@ -1,7 +1,7 @@
 'use client';
 import { useState, useRef, useCallback } from 'react';
 import { useFolderGames } from '@/hooks/useLibrary';
-import { updateGame, deleteGame, saveGame, checkDuplicate, parsePgnGames, deriveTitle } from '@/lib/library';
+import { updateGame, deleteGame, importGames, parsePgnGames, deriveTitle } from '@/lib/library';
 import type { LibraryGame } from '@/lib/db';
 import { GameInfoModal } from './GameInfoModal';
 
@@ -189,22 +189,7 @@ export function LibraryGameList({ folderId, mode, onLoad, onSaveHere }: LibraryG
         setImportResult('No valid games found in the file.');
         return;
       }
-      let saved = 0;
-      let dupes = 0;
-      for (const game of parsed) {
-        const isDup = await checkDuplicate(folderId, game.pgn);
-        if (isDup) { dupes++; continue; }
-        await saveGame({
-          folderId,
-          title: game.title,
-          pgn: game.pgn,
-          headers: game.headers,
-          nodeComments: {},
-          annotations: {},
-          reviewData: null,
-        });
-        saved++;
-      }
+      const { saved, dupes } = await importGames(folderId, parsed);
       const msg = dupes > 0
         ? `${saved} game${saved !== 1 ? 's' : ''} imported, ${dupes} duplicate${dupes !== 1 ? 's' : ''} skipped`
         : `${saved} game${saved !== 1 ? 's' : ''} imported`;

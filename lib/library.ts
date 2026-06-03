@@ -1,5 +1,5 @@
 import { nanoid } from 'nanoid';
-import { db, LibraryFolder, LibraryGame, StoredAnnotation, BoardDraft } from './db';
+import { db, LibraryFolder, LibraryGame, GraphEdge, StoredAnnotation, BoardDraft } from './db';
 import type { GameReview } from './analysis';
 import { ensureOpeningConcept } from './concepts';
 import { ensureConceptGameEdge, deleteEdgesForGame } from './edges';
@@ -110,6 +110,81 @@ export async function updateGame(id: string, partial: Partial<Omit<LibraryGame, 
 export async function deleteGame(id: string): Promise<void> {
   await db.games.delete(id);
   await deleteEdgesForGame(id);
+}
+
+// ─── Bulk import ──────────────────────────────────────────────────────────────
+
+// Imports many parsed games into a folder in a single pass. Avoids the O(N²)
+// memory/CPU blow-up of calling checkDuplicate + saveGame per game (each of
+// which reloaded the whole folder): existing fingerprints are loaded ONCE, the
+// batch is de-duped in memory, and rows + edges are inserted with bulkAdd.
+export async function importGames(
+  folderId: string,
+  parsed: ParsedPgnGame[],
+): Promise<{ saved: number; dupes: number }> {
+  const existing = await db.games.where('folderId').equals(folderId).toArray();
+  const seen = new Set(existing.map((g) => movesFingerprint(g.pgn)));
+
+  const now = Date.now();
+  const rows: LibraryGame[] = [];
+  let dupes = 0;
+  for (const g of parsed) {
+    const fp = movesFingerprint(g.pgn);
+    if (!fp || seen.has(fp)) { dupes++; continue; }
+    seen.add(fp);
+    rows.push({
+      id: nanoid(),
+      folderId,
+      title: g.title,
+      pgn: g.pgn,
+      headers: g.headers,
+      nodeComments: {},
+      annotations: {},
+      reviewData: null,
+      createdAt: now,
+      updatedAt: now,
+    });
+  }
+
+  if (rows.length === 0) return { saved: 0, dupes };
+
+  await db.games.bulkAdd(rows);
+  await seedConceptsForGames(rows);
+  return { saved: rows.length, dupes };
+}
+
+// Batch concept seeding: ensure each unique ECO concept once, then bulk-add the
+// concept→game edges (rows are brand-new, so no edge de-dup needed).
+async function seedConceptsForGames(rows: LibraryGame[]): Promise<void> {
+  try {
+    const ecoToConcept = new Map<string, string>();
+    for (const r of rows) {
+      const eco = (r.headers.ECO ?? '').trim();
+      if (!eco || ecoToConcept.has(eco)) continue;
+      const c = await ensureOpeningConcept(eco, r.headers.Opening);
+      if (c) ecoToConcept.set(eco, c.id);
+    }
+    if (ecoToConcept.size === 0) return;
+
+    const now = Date.now();
+    const edges: GraphEdge[] = [];
+    for (const r of rows) {
+      const conceptId = ecoToConcept.get((r.headers.ECO ?? '').trim());
+      if (!conceptId) continue;
+      edges.push({
+        id: nanoid(),
+        type: 'concept-game',
+        source: conceptId,
+        target: r.id,
+        origin: 'auto',
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
+    if (edges.length) await db.graphEdges.bulkAdd(edges);
+  } catch {
+    /* graph seeding is non-critical */
+  }
 }
 
 // ─── Serialization ────────────────────────────────────────────────────────────
