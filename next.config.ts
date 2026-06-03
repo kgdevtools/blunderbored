@@ -3,6 +3,7 @@ import type { NextConfig } from "next";
 const nextConfig: NextConfig = {
   allowedDevOrigins: [
     'unspoiled-prancing-resisting.ngrok-free.dev',
+    '192.168.110.202',
   ],
   async headers() {
     return [
