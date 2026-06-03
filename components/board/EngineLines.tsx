@@ -5,6 +5,9 @@ import type { EngineMultiLine } from '@/lib/engine';
 import type { Square, PieceSymbol } from 'chess.js';
 import { EngineOfflineButton } from './EngineOfflineButton';
 
+// Shared sizing so the engine-row controls (ON / Show Lines / offline) match.
+export const ENGINE_BTN = 'px-2 py-1 rounded text-xs leading-none tracking-tight font-medium transition-colors shrink-0';
+
 interface EngineLinesProps {
   lines: EngineMultiLine[];
   depth: number;
@@ -88,10 +91,10 @@ export function EngineLines({ lines, depth, isComputing, enabled, onToggle, curr
         <button
           onClick={onToggle}
           className={[
-            'px-2 py-0.5 rounded text-xs font-mono tracking-tight transition-colors shrink-0',
+            ENGINE_BTN,
             enabled
-              ? 'bg-green-800 hover:bg-green-700 text-green-100'
-              : 'bg-zinc-700 hover:bg-zinc-600 text-zinc-300',
+              ? 'bg-green-700 hover:bg-green-600 text-green-50'
+              : 'bg-zinc-700 hover:bg-zinc-600 text-zinc-200',
           ].join(' ')}
         >
           {enabled ? 'OFF' : 'ON'}
@@ -102,12 +105,12 @@ export function EngineLines({ lines, depth, isComputing, enabled, onToggle, curr
           onClick={() => setLinesVisible((v) => !v)}
           disabled={!enabled}
           className={[
-            'px-2 py-0.5 rounded text-xs tracking-tight transition-colors shrink-0',
+            ENGINE_BTN,
             !enabled
               ? 'bg-zinc-800 text-zinc-600 cursor-not-allowed'
               : linesVisible
-                ? 'bg-blue-800 hover:bg-blue-700 text-blue-100'
-                : 'bg-zinc-700 hover:bg-zinc-600 text-zinc-300',
+                ? 'bg-blue-700 hover:bg-blue-600 text-blue-50'
+                : 'bg-zinc-700 hover:bg-zinc-600 text-zinc-200',
           ].join(' ')}
         >
           {linesVisible ? 'Hide Lines' : 'Show Engine Lines'}

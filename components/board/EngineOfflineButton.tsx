@@ -91,18 +91,19 @@ export function EngineOfflineButton() {
 
   if (state === 'checking') return null;
 
-  // Shared pill shape so every state lines up with the ON / Hide Lines buttons.
+  // Shared pill shape, matched to ENGINE_BTN so it's the same size as ON / Show
+  // Lines (same padding/text, no border so heights line up exactly).
   const pill =
-    'flex items-center gap-1.5 shrink-0 rounded px-2 py-0.5 text-[11px] font-medium leading-none tracking-tight transition-colors';
+    'flex items-center gap-1.5 shrink-0 rounded px-2 py-1 text-xs font-medium leading-none tracking-tight transition-colors';
 
   if (state === 'cached') {
     return (
       <span
-        className={`${pill} border border-green-700/50 bg-green-900/40 text-green-300`}
+        className={`${pill} bg-green-700 text-green-50`}
         title="Stockfish is saved on this device — analysis works offline"
       >
         <CheckIcon />
-        Available offline
+        Offline ready
       </span>
     );
   }
@@ -111,12 +112,12 @@ export function EngineOfflineButton() {
     const pct = Math.round(progress * 100);
     return (
       <span
-        className={`${pill} cursor-wait border border-blue-700/50 bg-blue-900/40 text-blue-200`}
+        className={`${pill} cursor-wait bg-blue-700 text-blue-50`}
         title="Downloading Stockfish for offline use…"
       >
-        <span className="relative h-1.5 w-12 overflow-hidden rounded-full bg-blue-950">
+        <span className="relative h-1.5 w-10 overflow-hidden rounded-full bg-blue-900">
           <span
-            className="absolute inset-y-0 left-0 rounded-full bg-blue-400 transition-[width] duration-150"
+            className="absolute inset-y-0 left-0 rounded-full bg-blue-200 transition-[width] duration-150"
             style={{ width: `${pct}%` }}
           />
         </span>
@@ -137,12 +138,12 @@ export function EngineOfflineButton() {
       }
       className={`${pill} ${
         isError
-          ? 'border border-red-700/50 bg-red-900/40 text-red-300 hover:bg-red-800/50'
-          : 'border border-amber-700/50 bg-amber-900/30 text-amber-300 hover:bg-amber-800/40'
+          ? 'bg-red-700 hover:bg-red-600 text-red-50'
+          : 'bg-amber-700 hover:bg-amber-600 text-amber-50'
       }`}
     >
       <DownloadIcon />
-      {isError ? 'Retry download' : 'Save for offline'}
+      {isError ? 'Retry' : 'Save offline'}
     </button>
   );
 }

@@ -1,6 +1,7 @@
 'use client';
 import { Fragment, useEffect, useRef, useState } from 'react';
 import type { GameNode, MoveListToken } from '@/lib/gameTree';
+import { scrollActiveIntoView } from '@/lib/scroll';
 import { RefLinker } from './RefLinker';
 
 interface MovesListProps {
@@ -59,7 +60,7 @@ export function MovesList({ tokens, current, onSelect, onDeleteMove, onDeleteAft
   };
 
   useEffect(() => {
-    activeRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    scrollActiveIntoView(activeRef.current);
   }, [current.id]);
 
   // Close context menu on outside click / touch
@@ -143,15 +144,14 @@ export function MovesList({ tokens, current, onSelect, onDeleteMove, onDeleteAft
                   className={[
                     'font-mono rounded px-1 transition-colors select-none',
                     isVariation ? 'text-xs text-zinc-400 hover:bg-zinc-700' : 'text-white hover:bg-zinc-600',
+                    // A commented move is shaded rather than dotted; active (blue) wins.
+                    comment && !isActive ? 'bg-amber-500/15' : '',
                     isActive ? 'bg-blue-600 text-white font-semibold hover:bg-blue-500' : '',
                   ].join(' ')}
                 >
                   {node.move!.san}
                   {nagInfo && (
                     <span className={`font-bold ${isActive ? 'text-white' : nagInfo.color}`}>{nagInfo.glyph}</span>
-                  )}
-                  {comment && !isEditing && (
-                    <span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-400 ml-0.5 align-middle" />
                   )}
                 </button>
               </span>

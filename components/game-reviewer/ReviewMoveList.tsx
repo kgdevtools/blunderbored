@@ -2,6 +2,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { ReviewedMove } from '@/lib/analysis';
 import { QUALITY_META } from '@/lib/accuracy';
+import { scrollActiveIntoView } from '@/lib/scroll';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -131,7 +132,7 @@ export function ReviewMoveList({ moves, currentMoveIndex, onSelectMove, comments
   const pairs = useMemo(() => groupMovePairs(moves), [moves]);
 
   useEffect(() => {
-    activePairRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    scrollActiveIntoView(activePairRef.current);
   }, [currentMoveIndex]);
 
   useEffect(() => {
