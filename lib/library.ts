@@ -1,7 +1,7 @@
 import { nanoid } from 'nanoid';
 import { db, LibraryFolder, LibraryGame, GraphEdge, StoredAnnotation, BoardDraft } from './db';
 import type { GameReview } from './analysis';
-import { ensureOpeningConcept } from './concepts';
+import { ensureOpeningConcept, ensureOpeningHierarchy } from './concepts';
 import { ensureConceptGameEdge, deleteEdgesForGame } from './edges';
 
 // Auto-seed: derive an opening concept from a game's ECO/Opening headers and
@@ -11,6 +11,7 @@ async function seedConceptsForGame(game: LibraryGame): Promise<void> {
   try {
     const concept = await ensureOpeningConcept(game.headers.ECO, game.headers.Opening);
     if (concept) await ensureConceptGameEdge(concept.id, game.id, 'auto');
+    await ensureOpeningHierarchy();
   } catch {
     /* graph seeding is non-critical */
   }
@@ -182,6 +183,7 @@ async function seedConceptsForGames(rows: LibraryGame[]): Promise<void> {
       });
     }
     if (edges.length) await db.graphEdges.bulkAdd(edges);
+    await ensureOpeningHierarchy();
   } catch {
     /* graph seeding is non-critical */
   }

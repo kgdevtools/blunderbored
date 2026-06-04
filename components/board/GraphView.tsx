@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db, LibraryGame } from '@/lib/db';
 import { conceptLevelGraph, egoNetwork } from '@/lib/edges';
-import { colorForFamily } from '@/lib/concepts';
+import { colorForFamily, ensureOpeningHierarchy } from '@/lib/concepts';
 
 interface GraphViewProps {
   onOpenGame: (game: LibraryGame) => void;
@@ -39,9 +39,25 @@ interface SimNode extends ModelNode {
 
 const GAME_COLOR = '#a1a1aa';
 
+// Zoom bounds. Min is generous so small screens can pull the whole graph into view.
+const MIN_K = 0.25, MAX_K = 4;
+
+// Zoom `t` to `nextK` while keeping the canvas point (px, py) fixed under the cursor/pinch.
+function applyZoom(t: { x: number; y: number; k: number }, nextK: number, px: number, py: number) {
+  const k = Math.max(MIN_K, Math.min(MAX_K, nextK));
+  t.x = px - (px - t.x) * (k / t.k);
+  t.y = py - (py - t.y) * (k / t.k);
+  t.k = k;
+}
+
 export function GraphView({ onOpenGame }: GraphViewProps) {
   const [view, setView] = useState<View>({ kind: 'concept-level' });
   const canvasRef = useRef<HTMLCanvasElement>(null);
+
+  // Backfill the opening hierarchy for pre-existing data (idempotent). New
+  // imports build it during seeding; this covers libraries seeded before it
+  // existed. The live query below picks up any edges this adds.
+  useEffect(() => { ensureOpeningHierarchy().catch(() => {}); }, []);
 
   // ── Build the render model for the current view ────────────────────────────
   const model = useLiveQuery<RenderModel>(async () => {
@@ -199,12 +215,16 @@ export function GraphView({ onOpenGame }: GraphViewProps) {
     return () => { cancelAnimationFrame(raf); ro.disconnect(); };
   }, []);
 
-  // ── Pointer: pan (drag) + click (hit-test) + wheel zoom ─────────────────────
+  // ── Pointer: 1-finger pan + tap (hit-test), 2-finger pinch-zoom, wheel zoom ──
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    let dragging = false, moved = false, lastX = 0, lastY = 0;
+    // All active pointers, keyed by id — lets us tell a pan from a pinch.
+    const pointers = new Map<number, { x: number; y: number }>();
+    let panId: number | null = null; // pointer currently driving a pan
+    let moved = false, lastX = 0, lastY = 0;
+    let pinchDist = 0;               // last 2-finger gap; 0 means "not pinching"
 
     const toWorld = (clientX: number, clientY: number) => {
       const rect = canvas.getBoundingClientRect();
@@ -212,17 +232,59 @@ export function GraphView({ onOpenGame }: GraphViewProps) {
       return { x: (clientX - rect.left - t.x) / t.k, y: (clientY - rect.top - t.y) / t.k };
     };
 
-    const onDown = (e: PointerEvent) => { dragging = true; moved = false; lastX = e.clientX; lastY = e.clientY; };
+    const onDown = (e: PointerEvent) => {
+      canvas.setPointerCapture?.(e.pointerId);
+      pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (pointers.size === 1) {
+        panId = e.pointerId; moved = false; lastX = e.clientX; lastY = e.clientY;
+      } else if (pointers.size === 2) {
+        panId = null; // a second finger landed — switch from pan to pinch
+        const [a, b] = [...pointers.values()];
+        pinchDist = Math.hypot(a.x - b.x, a.y - b.y);
+      }
+    };
+
     const onMove = (e: PointerEvent) => {
-      if (!dragging) return;
+      const p = pointers.get(e.pointerId);
+      if (!p) return;
+      p.x = e.clientX; p.y = e.clientY;
+
+      if (pointers.size >= 2) {
+        const [a, b] = [...pointers.values()];
+        const dist = Math.hypot(a.x - b.x, a.y - b.y);
+        if (pinchDist > 0 && dist > 0) {
+          const rect = canvas.getBoundingClientRect();
+          const mx = (a.x + b.x) / 2 - rect.left, my = (a.y + b.y) / 2 - rect.top;
+          const t = transformRef.current;
+          applyZoom(t, t.k * (dist / pinchDist), mx, my);
+        }
+        pinchDist = dist;
+        moved = true;
+        return;
+      }
+
+      if (e.pointerId !== panId) return;
       const dx = e.clientX - lastX, dy = e.clientY - lastY;
       if (Math.abs(dx) + Math.abs(dy) > 3) moved = true;
       transformRef.current.x += dx; transformRef.current.y += dy;
       lastX = e.clientX; lastY = e.clientY;
     };
+
     const onUp = (e: PointerEvent) => {
-      dragging = false;
-      if (moved) return; // it was a pan, not a click
+      const wasPan = e.pointerId === panId;
+      pointers.delete(e.pointerId);
+      if (pointers.size < 2) pinchDist = 0;
+
+      if (pointers.size === 1) {
+        // dropped from pinch back to one finger — rebase the pan to the survivor
+        const [[id, p]] = [...pointers.entries()];
+        panId = id; lastX = p.x; lastY = p.y;
+        return;
+      }
+      if (pointers.size > 0) return;
+
+      panId = null;
+      if (!wasPan || moved) return; // a pan/pinch, not a tap
       const { x, y } = toWorld(e.clientX, e.clientY);
       let hit: SimNode | null = null;
       for (const n of simRef.current) {
@@ -231,29 +293,36 @@ export function GraphView({ onOpenGame }: GraphViewProps) {
       }
       if (hit) setView({ kind: 'ego', id: hit.id });
     };
+
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
-      const t = transformRef.current;
       const rect = canvas.getBoundingClientRect();
-      const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+      const t = transformRef.current;
       const factor = e.deltaY < 0 ? 1.1 : 1 / 1.1;
-      const k = Math.max(0.3, Math.min(3, t.k * factor));
-      t.x = mx - (mx - t.x) * (k / t.k);
-      t.y = my - (my - t.y) * (k / t.k);
-      t.k = k;
+      applyZoom(t, t.k * factor, e.clientX - rect.left, e.clientY - rect.top);
     };
 
     canvas.addEventListener('pointerdown', onDown);
     window.addEventListener('pointermove', onMove);
     window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onUp);
     canvas.addEventListener('wheel', onWheel, { passive: false });
     return () => {
       canvas.removeEventListener('pointerdown', onDown);
       window.removeEventListener('pointermove', onMove);
       window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onUp);
       canvas.removeEventListener('wheel', onWheel);
     };
   }, []);
+
+  // Button zoom (mobile-friendly fallback): zoom about the canvas centre.
+  const zoomByButton = (factor: number) => {
+    const c = canvasRef.current;
+    if (!c) return;
+    applyZoom(transformRef.current, transformRef.current.k * factor, c.clientWidth / 2, c.clientHeight / 2);
+  };
+  const resetView = () => { transformRef.current = { x: 0, y: 0, k: 1 }; };
 
   const focusGameId = view.kind === 'ego' && model?.focus?.type === 'game' ? view.id : null;
 
@@ -288,6 +357,31 @@ export function GraphView({ onOpenGame }: GraphViewProps) {
       </div>
 
       <canvas ref={canvasRef} className="w-full h-full cursor-grab active:cursor-grabbing touch-none" />
+
+      {/* Zoom controls — primary on touch / small screens, also work on desktop */}
+      <div className="absolute bottom-3 right-3 z-10 flex flex-col gap-1.5">
+        <button
+          onClick={() => zoomByButton(1.25)}
+          aria-label="Zoom in"
+          className="h-9 w-9 grid place-items-center rounded bg-zinc-800/90 hover:bg-zinc-700 text-zinc-100 text-lg leading-none border border-zinc-700"
+        >
+          +
+        </button>
+        <button
+          onClick={() => zoomByButton(0.8)}
+          aria-label="Zoom out"
+          className="h-9 w-9 grid place-items-center rounded bg-zinc-800/90 hover:bg-zinc-700 text-zinc-100 text-lg leading-none border border-zinc-700"
+        >
+          −
+        </button>
+        <button
+          onClick={resetView}
+          aria-label="Reset view"
+          className="h-9 w-9 grid place-items-center rounded bg-zinc-800/90 hover:bg-zinc-700 text-zinc-400 hover:text-zinc-100 text-sm leading-none border border-zinc-700"
+        >
+          ⟲
+        </button>
+      </div>
 
       {model && model.nodes.length === 0 && (
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
