@@ -231,8 +231,8 @@ function FolderRow({
 
       <span className="flex-1 truncate">{folder.name}</span>
 
-      {/* Row actions — revealed on hover */}
-      <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-all">
+      {/* Row actions — always visible on touch, hover-revealed on desktop */}
+      <div className="flex items-center gap-0.5 sm:opacity-0 sm:group-hover:opacity-100 transition-all">
         {/* New game (file) — opens Game Data to enter metadata */}
         <button
           className="p-0.5 rounded text-zinc-400 hover:text-zinc-100 hover:bg-zinc-600 transition-colors"

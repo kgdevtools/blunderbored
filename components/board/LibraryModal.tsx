@@ -86,17 +86,25 @@ export function LibraryModal({ mode, onSaveHere, onLoad, onClose }: LibraryModal
   const [tab, setTab] = useState<Tab>('folders');
   const activeTab: Tab = mode === 'save' ? 'folders' : tab;
 
-  // Resizable split between the folder tree and the game list.
+  // Resizable + collapsible split. "Collapsed" is simply width 0, so the folder
+  // panel hides and the game list takes the full width (key on mobile).
   const bodyRef = useRef<HTMLDivElement>(null);
   const dragging = useRef(false);
-  const [leftWidth, setLeftWidth] = useState(220);
+  // Start collapsed on narrow screens so the game list keeps its width (titles
+  // were truncated away on mobile). Safe to read window in the initializer: the
+  // modal only ever mounts client-side (behind `showLibrary`), never via SSR.
+  const [leftWidth, setLeftWidth] = useState(() =>
+    typeof window !== 'undefined' && window.innerWidth < 640 ? 0 : 220,
+  );
+  const leftCollapsed = leftWidth === 0;
 
   useEffect(() => {
     const onMove = (e: PointerEvent) => {
       if (!dragging.current || !bodyRef.current) return;
       const rect = bodyRef.current.getBoundingClientRect();
       const w = e.clientX - rect.left;
-      setLeftWidth(Math.max(150, Math.min(w, rect.width - 240)));
+      // Drag (almost) to the edge → collapse (0); otherwise clamp to a usable range.
+      setLeftWidth(w < 90 ? 0 : Math.max(150, Math.min(w, rect.width - 240)));
     };
     const onUp = () => { dragging.current = false; document.body.style.cursor = ''; };
     window.addEventListener('pointermove', onMove);
@@ -176,25 +184,39 @@ export function LibraryModal({ mode, onSaveHere, onLoad, onClose }: LibraryModal
         {/* ── Body ───────────────────────────────────────────────────────── */}
         {activeTab === 'folders' && (
           <div ref={bodyRef} className="flex flex-1 min-h-0">
-            {/* Left: folder tree (resizable) */}
-            <div
-              style={{ width: leftWidth }}
-              className="shrink-0 border-r border-zinc-700/80 overflow-y-auto bg-zinc-900/30"
-            >
-              <LibraryFolderTree
-                selectedFolderId={selectedFolderId}
-                onSelect={setSelectedFolderId}
-                onLoad={(game) => { onLoad(game); onClose(); }}
-                mode={mode}
-              />
-            </div>
+            {/* Left: folder tree (resizable + collapsible) */}
+            {!leftCollapsed && (
+              <div
+                style={{ width: leftWidth }}
+                className="shrink-0 border-r border-zinc-700/80 overflow-y-auto bg-zinc-900/30"
+              >
+                <LibraryFolderTree
+                  selectedFolderId={selectedFolderId}
+                  onSelect={setSelectedFolderId}
+                  onLoad={(game) => { onLoad(game); onClose(); }}
+                  mode={mode}
+                />
+              </div>
+            )}
 
-            {/* Drag handle */}
-            <div
-              onPointerDown={() => { dragging.current = true; document.body.style.cursor = 'col-resize'; }}
-              className="w-1 shrink-0 cursor-col-resize bg-zinc-800 hover:bg-blue-500/60 active:bg-blue-500 transition-colors"
-              title="Drag to resize"
-            />
+            {/* Drag handle + collapse/expand toggle */}
+            <div className="relative w-2 shrink-0">
+              <div
+                onPointerDown={() => { dragging.current = true; document.body.style.cursor = 'col-resize'; }}
+                className="absolute inset-0 cursor-col-resize bg-zinc-800 hover:bg-blue-500/60 active:bg-blue-500 transition-colors"
+                title="Drag to resize — drag fully left to collapse"
+              />
+              <button
+                onClick={() => setLeftWidth((w) => (w === 0 ? 220 : 0))}
+                className="absolute top-2 left-1/2 -translate-x-1/2 z-10 grid place-items-center w-5 h-7 rounded bg-zinc-700 hover:bg-zinc-600 text-zinc-300 hover:text-white shadow-md transition-colors"
+                title={leftCollapsed ? 'Show folders' : 'Hide folders'}
+                aria-label={leftCollapsed ? 'Show folders' : 'Hide folders'}
+              >
+                <span className={`inline-flex transition-transform ${leftCollapsed ? '' : 'rotate-180'}`}>
+                  <ChevronIcon />
+                </span>
+              </button>
+            </div>
 
             {/* Right: game list */}
             <div className="flex-1 min-w-0 overflow-y-auto">
@@ -210,7 +232,7 @@ export function LibraryModal({ mode, onSaveHere, onLoad, onClose }: LibraryModal
 
         {activeTab === 'concepts' && (
           <div className="flex-1 min-h-0 overflow-y-auto">
-            <ConceptList />
+            <ConceptList onOpenGame={(game) => { onLoad(game); onClose(); }} />
           </div>
         )}
 

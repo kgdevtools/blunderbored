@@ -57,6 +57,22 @@ function FolderIcon() {
   );
 }
 
+function PlayIcon() {
+  return (
+    <svg {...iconProps} fill="currentColor" stroke="none" width={14} height={14}>
+      <polygon points="6 4 20 12 6 20 6 4" />
+    </svg>
+  );
+}
+
+function PauseIcon() {
+  return (
+    <svg {...iconProps} fill="currentColor" stroke="none" width={14} height={14}>
+      <rect x="6" y="4" width="4" height="16" rx="1" /><rect x="14" y="4" width="4" height="16" rx="1" />
+    </svg>
+  );
+}
+
 interface BoardControlsProps {
   onStart: () => void;
   onPrev: () => void;
@@ -92,6 +108,31 @@ export function BoardControls({
   const [showMenu, setShowMenu] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
+
+  // ── Replay (auto-advance) ──────────────────────────────────────────────────
+  // A persistent interval steps once per second while playing. It reads the
+  // latest position/handler through refs rather than effect deps: `canNext`
+  // stays true through the middle of a game and `onNext` is a stable callback,
+  // so a deps-driven effect would only fire once (the original one-move bug).
+  const [isPlaying, setIsPlaying] = useState(false);
+  const onNextRef = useRef(onNext);
+  const canNextRef = useRef(canNext);
+  useEffect(() => { onNextRef.current = onNext; canNextRef.current = canNext; });
+
+  useEffect(() => {
+    if (!isPlaying) return;
+    const id = setInterval(() => {
+      if (!canNextRef.current) { setIsPlaying(false); return; } // reached the end
+      onNextRef.current();
+    }, 1000);
+    return () => clearInterval(id);
+  }, [isPlaying]);
+
+  const toggleReplay = () => {
+    if (isPlaying) { setIsPlaying(false); return; }
+    if (!canNext) onStart(); // at the end → replay from the start
+    setIsPlaying(true);
+  };
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -148,6 +189,14 @@ export function BoardControls({
     <div className="relative flex gap-0.5 pt-2 border-t border-zinc-700">
       <button className={btn} onClick={onStart} disabled={!canPrev} title="Start (Home)">⟨⟨</button>
       <button className={btn} onClick={onPrev}  disabled={!canPrev} title="Previous (←)">⟨</button>
+      <button
+        className={`${btn} grid place-items-center`}
+        onClick={toggleReplay}
+        disabled={!canNext && !canPrev}
+        title={isPlaying ? 'Pause replay' : 'Replay (1s/move)'}
+      >
+        {isPlaying ? <PauseIcon /> : <PlayIcon />}
+      </button>
       <button className={btn} onClick={onNext}  disabled={!canNext} title="Next (→)">⟩</button>
       <button className={btn} onClick={onEnd}   disabled={!canNext} title="End (End)">⟩⟩</button>
       <button className={btn} onClick={onFlip}  title="Flip board (F)">⇅</button>

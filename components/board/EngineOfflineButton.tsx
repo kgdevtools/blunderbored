@@ -91,10 +91,10 @@ export function EngineOfflineButton() {
 
   if (state === 'checking') return null;
 
-  // Shared pill shape, matched to ENGINE_BTN so it's the same size as ON / Show
-  // Lines (same padding/text, no border so heights line up exactly).
+  // Shared shape, matched to ENGINE_BTN so it's the same size as ON / Show Lines
+  // (same padding/text, no rounding so it sits flush in the segmented bar).
   const pill =
-    'flex items-center gap-1.5 shrink-0 rounded px-2 py-1 text-xs font-medium leading-none tracking-tight transition-colors';
+    'flex items-center gap-1.5 shrink-0 px-2 py-1 text-xs font-medium leading-none tracking-tight transition-colors';
 
   if (state === 'cached') {
     return (

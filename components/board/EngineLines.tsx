@@ -6,7 +6,9 @@ import type { Square, PieceSymbol } from 'chess.js';
 import { EngineOfflineButton } from './EngineOfflineButton';
 
 // Shared sizing so the engine-row controls (ON / Show Lines / offline) match.
-export const ENGINE_BTN = 'px-2 py-1 rounded text-xs leading-none tracking-tight font-medium transition-colors shrink-0';
+// No rounding — the three controls form a single flush segmented bar (see the
+// `divide-x` group below); dividers come from the wrapper, not the buttons.
+export const ENGINE_BTN = 'px-2 py-1 text-xs leading-none tracking-tight font-medium transition-colors shrink-0';
 
 interface EngineLinesProps {
   lines: EngineMultiLine[];
@@ -87,37 +89,41 @@ export function EngineLines({ lines, depth, isComputing, enabled, onToggle, curr
           Stockfish 18 Lite
         </span>
 
-        {/* On → Off toggle (text = action that will happen on click) */}
-        <button
-          onClick={onToggle}
-          className={[
-            ENGINE_BTN,
-            enabled
-              ? 'bg-green-700 hover:bg-green-600 text-green-50'
-              : 'bg-zinc-700 hover:bg-zinc-600 text-zinc-200',
-          ].join(' ')}
-        >
-          {enabled ? 'OFF' : 'ON'}
-        </button>
-
-        {/* Show / Hide Engine Lines — disabled while engine is off */}
-        <button
-          onClick={() => setLinesVisible((v) => !v)}
-          disabled={!enabled}
-          className={[
-            ENGINE_BTN,
-            !enabled
-              ? 'bg-zinc-800 text-zinc-600 cursor-not-allowed'
-              : linesVisible
-                ? 'bg-blue-700 hover:bg-blue-600 text-blue-50'
+        {/* Segmented control: ON / Show Lines / offline — flush, no rounding,
+            hairline dividers between them. */}
+        <div className="flex items-stretch shrink-0 divide-x divide-zinc-900/70">
+          {/* On → Off toggle (text = action that will happen on click) */}
+          <button
+            onClick={onToggle}
+            className={[
+              ENGINE_BTN,
+              enabled
+                ? 'bg-green-700 hover:bg-green-600 text-green-50'
                 : 'bg-zinc-700 hover:bg-zinc-600 text-zinc-200',
-          ].join(' ')}
-        >
-          {linesVisible ? 'Hide Lines' : 'Show Engine Lines'}
-        </button>
+            ].join(' ')}
+          >
+            {enabled ? 'OFF' : 'ON'}
+          </button>
 
-        {/* Offline-save control — pre-downloads the engine so analysis works offline */}
-        <EngineOfflineButton />
+          {/* Show / Hide Engine Lines — disabled while engine is off */}
+          <button
+            onClick={() => setLinesVisible((v) => !v)}
+            disabled={!enabled}
+            className={[
+              ENGINE_BTN,
+              !enabled
+                ? 'bg-zinc-800 text-zinc-600 cursor-not-allowed'
+                : linesVisible
+                  ? 'bg-blue-700 hover:bg-blue-600 text-blue-50'
+                  : 'bg-zinc-700 hover:bg-zinc-600 text-zinc-200',
+            ].join(' ')}
+          >
+            {linesVisible ? 'Hide Lines' : 'Show Engine Lines'}
+          </button>
+
+          {/* Offline-save control — pre-downloads the engine so analysis works offline */}
+          <EngineOfflineButton />
+        </div>
       </div>
 
       {/* Lines panel */}

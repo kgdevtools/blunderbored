@@ -16,15 +16,45 @@ function formatDate(ts: number): string {
   return new Date(ts).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
+// Uniform-width result chip: same footprint for 1-0 / 0-1 / ½-½ so the column
+// reads cleanly. Fills its (content-sized) element; '*'/unknown shows a dash.
 function ResultBadge({ result }: { result?: string }) {
-  if (!result || result === '*') return null;
+  if (!result || result === '*') {
+    return <span className="text-[10px] leading-none text-zinc-600 tabular-nums">—</span>;
+  }
   const cls =
     result === '1-0'
       ? 'bg-zinc-100 text-zinc-900'
       : result === '0-1'
         ? 'bg-zinc-900 text-zinc-100 border border-zinc-600'
         : 'bg-zinc-700 text-zinc-300';
-  return <span className={`px-1.5 py-0.5 rounded text-[11px] font-bold leading-none shrink-0 inline-flex items-center ${cls}`}>{result}</span>;
+  return <span className={`min-w-[2.4rem] justify-center px-1.5 py-0.5 rounded text-[11px] font-bold leading-none inline-flex items-center tabular-nums ${cls}`}>{result}</span>;
+}
+
+// ─── Action icons ─────────────────────────────────────────────────────────────
+
+function PencilIcon() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 20h9" /><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4z" />
+    </svg>
+  );
+}
+
+function TrashIcon() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+    </svg>
+  );
+}
+
+function CheckIcon() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="20 6 9 17 4 12" />
+    </svg>
+  );
 }
 
 // ─── Edit headers overlay ─────────────────────────────────────────────────────
@@ -107,49 +137,53 @@ function GameRow({
   return (
     <>
       <div
-        className={`group flex items-center gap-3 px-4 py-2 border-b border-zinc-800/70 transition-colors ${clickable ? 'cursor-pointer hover:bg-zinc-800/60' : 'hover:bg-zinc-800/30'}`}
+        className={`group flex items-center gap-2.5 px-3 py-1.5 border-b border-zinc-800/70 transition-colors ${clickable ? 'cursor-pointer hover:bg-zinc-800/60' : 'hover:bg-zinc-800/30'}`}
         onClick={clickable ? () => onLoad(game) : undefined}
         title={clickable ? 'Open game' : undefined}
       >
         {/* Index */}
-        <span className="text-xs tabular-nums text-zinc-600 shrink-0 w-5 text-right">{index}.</span>
+        <span className="text-[11px] tabular-nums text-zinc-600 shrink-0 w-4 text-right">{index}</span>
 
         {/* Title + context */}
         <div className="flex-1 min-w-0">
-          <div className="text-sm font-semibold tracking-tight text-zinc-100 truncate">
+          <div className="text-[13px] font-semibold tracking-tight text-zinc-100 truncate leading-tight">
             {game.title}
           </div>
           {detail && (
-            <div className="text-[11px] tracking-tight text-zinc-500 truncate mt-0.5">{detail}</div>
+            <div className="text-[10px] tracking-tight text-zinc-500 truncate leading-tight mt-px">{detail}</div>
           )}
         </div>
 
-        {/* Result + date */}
-        <div className="flex items-center gap-2 shrink-0">
+        {/* Result + date — own wrapper, stacked, right-aligned */}
+        <div className="flex flex-col items-end gap-0.5 shrink-0">
           <ResultBadge result={game.headers.Result} />
-          <span className="text-[11px] text-zinc-500 tabular-nums tracking-tight w-20 text-right hidden sm:block">
+          <span className="text-[10px] text-zinc-500 tabular-nums tracking-tight leading-none">
             {formatDate(game.updatedAt)}
           </span>
         </div>
 
-        {/* Actions — always visible on touch, hover-revealed on desktop */}
-        <div className="flex items-center gap-1 shrink-0 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity">
+        {/* Actions — icon-only to save space; visible on touch, hover on desktop */}
+        <div className="flex items-center gap-0.5 shrink-0 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity">
           {mode === 'save' && (
             <button
               onClick={(e) => { e.stopPropagation(); onSaveHere(); }}
-              className="px-2 py-1 rounded bg-emerald-700 hover:bg-emerald-600 text-white text-[11px] font-semibold leading-none transition-colors"
-            >Update</button>
+              className="p-1.5 rounded text-emerald-400 hover:text-emerald-300 hover:bg-emerald-900/40 transition-colors"
+              title="Update this game"
+              aria-label="Update this game"
+            ><CheckIcon /></button>
           )}
           <button
             onClick={(e) => { e.stopPropagation(); setIsEditingHeaders(true); }}
-            className="px-2.5 py-1 rounded text-[11px] font-medium leading-none text-zinc-300 bg-zinc-800 hover:bg-zinc-700 hover:text-zinc-100 transition-colors"
+            className="p-1.5 rounded text-zinc-400 hover:text-zinc-100 hover:bg-zinc-700 transition-colors"
             title="Edit game data"
-          >Edit</button>
+            aria-label="Edit game data"
+          ><PencilIcon /></button>
           <button
             onClick={(e) => { e.stopPropagation(); setIsDeleting(true); }}
-            className="px-2.5 py-1 rounded text-[11px] font-medium leading-none text-red-400/80 bg-zinc-800 hover:bg-red-900/60 hover:text-red-300 transition-colors"
+            className="p-1.5 rounded text-red-400/80 hover:text-red-300 hover:bg-red-900/50 transition-colors"
             title="Delete game"
-          >Delete</button>
+            aria-label="Delete game"
+          ><TrashIcon /></button>
         </div>
       </div>
 
