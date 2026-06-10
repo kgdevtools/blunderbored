@@ -2,8 +2,8 @@ import type { MetadataRoute } from 'next';
 
 export default function manifest(): MetadataRoute.Manifest {
   return {
-    name: 'Chess Academy',
-    short_name: 'Chess Academy',
+    name: 'Blunderbored',
+    short_name: 'Blunderbored',
     description: 'Chess analysis board, trainers, and tools — works offline.',
     start_url: '/',
     display: 'standalone',
