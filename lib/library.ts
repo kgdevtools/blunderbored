@@ -115,6 +115,21 @@ export async function deleteGame(id: string): Promise<void> {
   await deleteEdgesForGame(id);
 }
 
+// The game before/after `currentId` within its folder, in the same order the
+// library lists them (most-recently-updated first). Lets the board step through
+// a folder without opening the library. Returns null at the ends.
+export async function getAdjacentGame(
+  folderId: string,
+  currentId: string,
+  dir: 1 | -1,
+): Promise<LibraryGame | null> {
+  const games = (await db.games.where('folderId').equals(folderId).toArray())
+    .sort((a, b) => b.updatedAt - a.updatedAt);
+  const idx = games.findIndex((g) => g.id === currentId);
+  if (idx === -1) return null;
+  return games[idx + dir] ?? null;
+}
+
 // ─── Bulk import ──────────────────────────────────────────────────────────────
 
 // Imports many parsed games into a folder in a single pass. Avoids the O(N²)

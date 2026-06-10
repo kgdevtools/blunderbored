@@ -6,10 +6,19 @@ import { LibraryFolderTree } from './LibraryFolderTree';
 import { LibraryGameList } from './LibraryGameList';
 import { ConceptList } from './ConceptList';
 import { GraphView } from './GraphView';
+import { hasActiveFilters, type GameFilters, type GameFormat } from '@/lib/gameMeta';
 
 type Tab = 'folders' | 'concepts' | 'graph';
 
 // ─── Icons ────────────────────────────────────────────────────────────────────
+
+function FunnelIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3" />
+    </svg>
+  );
+}
 
 function BookIcon() {
   return (
@@ -71,6 +80,82 @@ function Breadcrumb({
   );
 }
 
+// ─── Filter bar ───────────────────────────────────────────────────────────────
+
+const FORMATS: GameFormat[] = ['Bullet', 'Blitz', 'Rapid', 'Classical', 'Normal'];
+const RESULTS: { v: NonNullable<GameFilters['result']>; label: string }[] = [
+  { v: '1-0', label: 'White' },
+  { v: '0-1', label: 'Black' },
+  { v: '1/2-1/2', label: 'Draw' },
+];
+
+function FilterChip({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
+  return (
+    <button
+      onClick={onClick}
+      className={[
+        'px-2 py-0.5 rounded text-[11px] font-medium transition-colors',
+        active ? 'bg-blue-600 text-white' : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700',
+      ].join(' ')}
+    >
+      {children}
+    </button>
+  );
+}
+
+const dateInputCls = 'bg-zinc-800 border border-zinc-700 rounded px-1.5 py-0.5 text-[11px] text-zinc-200 [color-scheme:dark]';
+const rowLabelCls = 'text-[10px] uppercase tracking-wide text-zinc-600 w-14 shrink-0';
+
+function FilterBar({ filters, onChange }: { filters: GameFilters; onChange: (f: GameFilters) => void }) {
+  const toggle = <K extends keyof GameFilters>(key: K, val: GameFilters[K]) =>
+    onChange({ ...filters, [key]: filters[key] === val ? undefined : val });
+
+  return (
+    <div className="px-3 py-2 border-b border-zinc-800 bg-zinc-900/40 flex flex-col gap-1.5">
+      <div className="flex items-center gap-1.5 flex-wrap">
+        <span className={rowLabelCls}>Result</span>
+        {RESULTS.map((r) => (
+          <FilterChip key={r.v} active={filters.result === r.v} onClick={() => toggle('result', r.v)}>{r.label}</FilterChip>
+        ))}
+      </div>
+      <div className="flex items-center gap-1.5 flex-wrap">
+        <span className={rowLabelCls}>Format</span>
+        {FORMATS.map((f) => (
+          <FilterChip key={f} active={filters.format === f} onClick={() => toggle('format', f)}>{f}</FilterChip>
+        ))}
+      </div>
+      <div className="flex items-center gap-1.5 flex-wrap">
+        <span className={rowLabelCls}>Analysis</span>
+        <FilterChip active={filters.analysis === 'analysed'} onClick={() => toggle('analysis', 'analysed')}>Analysed</FilterChip>
+        <FilterChip active={filters.analysis === 'unanalysed'} onClick={() => toggle('analysis', 'unanalysed')}>Unanalysed</FilterChip>
+      </div>
+      <div className="flex items-center gap-1.5 flex-wrap">
+        <span className={rowLabelCls}>Date</span>
+        <input
+          type="date"
+          aria-label="From date"
+          value={filters.dateFrom ?? ''}
+          onChange={(e) => onChange({ ...filters, dateFrom: e.target.value || undefined })}
+          className={dateInputCls}
+        />
+        <span className="text-zinc-600 text-[10px]">to</span>
+        <input
+          type="date"
+          aria-label="To date"
+          value={filters.dateTo ?? ''}
+          onChange={(e) => onChange({ ...filters, dateTo: e.target.value || undefined })}
+          className={dateInputCls}
+        />
+        {hasActiveFilters(filters) && (
+          <button onClick={() => onChange({})} className="ml-auto text-[10px] text-zinc-400 hover:text-zinc-200 underline-offset-2 hover:underline">
+            Clear all
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ─── LibraryModal ─────────────────────────────────────────────────────────────
 
 interface LibraryModalProps {
@@ -78,10 +163,15 @@ interface LibraryModalProps {
   onSaveHere: (folderId: string) => void;
   onLoad: (game: LibraryGame) => void;
   onClose: () => void;
+  currentGameId?: string | null;
+  currentFolderId?: string | null;
 }
 
-export function LibraryModal({ mode, onSaveHere, onLoad, onClose }: LibraryModalProps) {
-  const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null);
+export function LibraryModal({ mode, onSaveHere, onLoad, onClose, currentGameId, currentFolderId }: LibraryModalProps) {
+  const [filters, setFilters] = useState<GameFilters>({});
+  const [showFilters, setShowFilters] = useState(false);
+  // Open onto the loaded game's folder so its row is visible (and highlighted).
+  const [selectedFolderId, setSelectedFolderId] = useState<string | null>(currentFolderId ?? null);
   // Tabs only apply when browsing; saving is always folder-picking.
   const [tab, setTab] = useState<Tab>('folders');
   const activeTab: Tab = mode === 'save' ? 'folders' : tab;
@@ -165,7 +255,7 @@ export function LibraryModal({ mode, onSaveHere, onLoad, onClose }: LibraryModal
 
         {/* ── Tab strip (browse only) ────────────────────────────────────── */}
         {mode === 'browse' && (
-          <div className="flex gap-1 px-3 py-1.5 border-b border-zinc-800 shrink-0">
+          <div className="flex items-center gap-1 px-3 py-1.5 border-b border-zinc-800 shrink-0">
             {(['folders', 'concepts', 'graph'] as const).map((t) => (
               <button
                 key={t}
@@ -178,7 +268,32 @@ export function LibraryModal({ mode, onSaveHere, onLoad, onClose }: LibraryModal
                 {t}
               </button>
             ))}
+            {/* Filter toggle — right-aligned, applies to the folders game list */}
+            {activeTab === 'folders' && (
+              <button
+                onClick={() => setShowFilters((v) => !v)}
+                className={[
+                  'ml-auto relative p-1.5 rounded transition-colors',
+                  showFilters || hasActiveFilters(filters)
+                    ? 'bg-blue-600/20 text-blue-300'
+                    : 'text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200',
+                ].join(' ')}
+                title="Filter games"
+                aria-label="Filter games"
+                aria-pressed={showFilters}
+              >
+                <FunnelIcon />
+                {hasActiveFilters(filters) && (
+                  <span className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-blue-400" />
+                )}
+              </button>
+            )}
           </div>
+        )}
+
+        {/* ── Filter bar ──────────────────────────────────────────────────── */}
+        {mode === 'browse' && activeTab === 'folders' && showFilters && (
+          <FilterBar filters={filters} onChange={setFilters} />
         )}
 
         {/* ── Body ───────────────────────────────────────────────────────── */}
@@ -225,6 +340,8 @@ export function LibraryModal({ mode, onSaveHere, onLoad, onClose }: LibraryModal
                 mode={mode}
                 onLoad={(game) => { onLoad(game); onClose(); }}
                 onSaveHere={handleSaveHere}
+                filters={filters}
+                currentGameId={currentGameId}
               />
             </div>
           </div>

@@ -1,9 +1,19 @@
 'use client';
-import { useState, useRef, useCallback } from 'react';
+import { useState, useRef, useCallback, useMemo, useEffect } from 'react';
 import { useFolderGames } from '@/hooks/useLibrary';
 import { updateGame, deleteGame, parsePgnGames, deriveTitle, analyzeImport, addParsedGames, replaceWithParsed, type ImportAnalysis } from '@/lib/library';
 import type { LibraryGame } from '@/lib/db';
+import { gameFormat, formatPgnDate, matchesFilters, hasActiveFilters, type GameFilters } from '@/lib/gameMeta';
 import { GameInfoModal } from './GameInfoModal';
+
+// Tints for the format chip so blitz/rapid/classical read apart at a glance.
+const FORMAT_STYLE: Record<string, string> = {
+  Bullet: 'text-rose-300 border-rose-800/50',
+  Blitz: 'text-amber-300 border-amber-800/50',
+  Rapid: 'text-emerald-300 border-emerald-800/50',
+  Classical: 'text-sky-300 border-sky-800/50',
+  Normal: 'text-zinc-400 border-zinc-700/60',
+};
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -98,21 +108,33 @@ function GameRow({
   mode,
   onLoad,
   onSaveHere,
+  isCurrent,
 }: {
   game: LibraryGame;
   index: number;
   mode: 'browse' | 'save';
   onLoad: (g: LibraryGame) => void;
   onSaveHere: () => void;
+  isCurrent?: boolean;
 }) {
   const [isDeleting, setIsDeleting] = useState(false);
   const [isEditingHeaders, setIsEditingHeaders] = useState(false);
+  const rowRef = useRef<HTMLDivElement>(null);
+
+  // Bring the currently-open game into view when the library opens onto it.
+  useEffect(() => {
+    if (isCurrent) rowRef.current?.scrollIntoView({ block: 'nearest' });
+  }, [isCurrent]);
 
   // Secondary line: real context (event / opening) rather than repeating the
   // players, which are already the title.
   const detail = [game.headers.Event, game.headers.Opening || game.headers.ECO]
     .filter((s) => s && s.trim())
     .join('  ·  ');
+  const format = gameFormat(game.headers);
+  const pgnDate = formatPgnDate(game.headers);
+  const eco = game.headers.ECO?.trim();
+  const analysed = game.reviewData != null;
 
   // ── Deleting confirmation ────────────────────────────────────────────────
   if (isDeleting) {
@@ -137,7 +159,10 @@ function GameRow({
   return (
     <>
       <div
-        className={`group flex items-center gap-2.5 px-3 py-1.5 border-b border-zinc-800/70 transition-colors ${clickable ? 'cursor-pointer hover:bg-zinc-800/60' : 'hover:bg-zinc-800/30'}`}
+        ref={rowRef}
+        className={`group flex items-center gap-2.5 px-3 py-1.5 border-b border-zinc-800/70 transition-colors ${
+          isCurrent ? 'bg-blue-950/50 border-l-2 border-l-blue-500' : ''
+        } ${clickable ? 'cursor-pointer hover:bg-zinc-800/60' : 'hover:bg-zinc-800/30'}`}
         onClick={clickable ? () => onLoad(game) : undefined}
         title={clickable ? 'Open game' : undefined}
       >
@@ -146,15 +171,29 @@ function GameRow({
 
         {/* Title + context */}
         <div className="flex-1 min-w-0">
-          <div className="text-[13px] font-semibold tracking-tight text-zinc-100 truncate leading-tight">
-            {game.title}
+          <div className="flex items-center gap-1.5 min-w-0">
+            {isCurrent && (
+              <span className="shrink-0 w-1.5 h-1.5 rounded-full bg-blue-400" title="Currently open" />
+            )}
+            <span className="text-[13px] font-semibold tracking-tight text-zinc-100 truncate leading-tight">
+              {game.title}
+            </span>
           </div>
           {detail && (
             <div className="text-[10px] tracking-tight text-zinc-500 truncate leading-tight mt-px">{detail}</div>
           )}
+          {/* Metadata strip: format · ECO · PGN date · analysed */}
+          <div className="flex items-center gap-1.5 mt-0.5 text-[9px] leading-none text-zinc-500">
+            <span className={`px-1 py-0.5 rounded-sm border ${FORMAT_STYLE[format]} font-medium tracking-tight`}>
+              {format}
+            </span>
+            {eco && <span className="font-mono text-zinc-400">{eco}</span>}
+            {pgnDate && <span className="tabular-nums">{pgnDate}</span>}
+            {analysed && <span className="text-emerald-400/90 font-medium tracking-tight">Analysed</span>}
+          </div>
         </div>
 
-        {/* Result + date — own wrapper, stacked, right-aligned */}
+        {/* Result + saved date — own wrapper, stacked, right-aligned */}
         <div className="flex flex-col items-end gap-0.5 shrink-0">
           <ResultBadge result={game.headers.Result} />
           <span className="text-[10px] text-zinc-500 tabular-nums tracking-tight leading-none">
@@ -201,10 +240,14 @@ interface LibraryGameListProps {
   mode: 'browse' | 'save';
   onLoad: (game: LibraryGame) => void;
   onSaveHere: () => void;
+  filters?: GameFilters;
+  currentGameId?: string | null;
 }
 
-export function LibraryGameList({ folderId, mode, onLoad, onSaveHere }: LibraryGameListProps) {
+export function LibraryGameList({ folderId, mode, onLoad, onSaveHere, filters, currentGameId }: LibraryGameListProps) {
   const games = useFolderGames(folderId);
+  const filtered = useMemo(() => games.filter((g) => matchesFilters(g, filters)), [games, filters]);
+  const filtersActive = hasActiveFilters(filters);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [importing, setImporting] = useState(false);
   const [importResult, setImportResult] = useState<string | null>(null);
@@ -288,17 +331,30 @@ export function LibraryGameList({ folderId, mode, onLoad, onSaveHere }: LibraryG
             </svg>
             <p className="text-[10px] tracking-tight text-zinc-600">No games in this folder</p>
           </div>
+        ) : filtered.length === 0 ? (
+          <div className="flex flex-col items-center justify-center h-full gap-1.5 p-5 text-center">
+            <p className="text-[11px] tracking-tight text-zinc-500">No games match the filters</p>
+            <p className="text-[10px] tracking-tight text-zinc-600">{games.length} hidden</p>
+          </div>
         ) : (
-          games.map((game, i) => (
-            <GameRow
-              key={game.id}
-              game={game}
-              index={i + 1}
-              mode={mode}
-              onLoad={onLoad}
-              onSaveHere={onSaveHere}
-            />
-          ))
+          <>
+            {filtersActive && (
+              <div className="px-3 py-1 text-[10px] tracking-tight text-zinc-500 border-b border-zinc-800/70">
+                {filtered.length} of {games.length} game{games.length !== 1 ? 's' : ''}
+              </div>
+            )}
+            {filtered.map((game, i) => (
+              <GameRow
+                key={game.id}
+                game={game}
+                index={i + 1}
+                mode={mode}
+                onLoad={onLoad}
+                onSaveHere={onSaveHere}
+                isCurrent={!!currentGameId && game.id === currentGameId}
+              />
+            ))}
+          </>
         )}
       </div>
 

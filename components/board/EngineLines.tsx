@@ -76,7 +76,7 @@ export function EngineLines({ lines, depth, isComputing, enabled, onToggle, curr
   const showLines = enabled && linesVisible;
 
   return (
-    <div className="mt-2">
+    <div>
       {/* Header — the engine buttons sit flush against the top & bottom rules
           (no vertical padding on the row; px gives a little horizontal breathing room). */}
       <div className="flex flex-wrap items-center gap-1.5 px-2 border-y border-zinc-700">

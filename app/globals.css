@@ -1,5 +1,21 @@
 @import "tailwindcss";
 
+/* DSEG7 — seven-segment LCD face (Casio-style), self-hosted for offline use. */
+@font-face {
+  font-family: 'DSEG7';
+  src: url('/fonts/DSEG7Classic-Regular.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'DSEG7';
+  src: url('/fonts/DSEG7Classic-Bold.woff2') format('woff2');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
 :root {
   --background: #ffffff;
   --foreground: #171717;
@@ -10,6 +26,7 @@
   --color-foreground: var(--foreground);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
+  --font-dseg: 'DSEG7', ui-monospace, monospace;
 }
 
 @media (prefers-color-scheme: dark) {

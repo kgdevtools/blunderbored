@@ -17,7 +17,8 @@ import { BoardControls } from './BoardControls';
 import { FenBar } from './FenBar';
 import { GameInfoModal } from './GameInfoModal';
 import { LibraryModal } from './LibraryModal';
-import { saveGame, updateGame, serializeBoardState, checkDuplicate, saveDraft, loadDraft, clearDraft } from '@/lib/library';
+import { ClockDisplay } from './ClockDisplay';
+import { saveGame, updateGame, serializeBoardState, checkDuplicate, saveDraft, loadDraft, clearDraft, getAdjacentGame } from '@/lib/library';
 import type { LibraryGame } from '@/lib/db';
 
 // ─── Game info header ─────────────────────────────────────────────────────────
@@ -237,6 +238,7 @@ export function BoardShell({ initialPgn, initialFen }: BoardShellProps) {
   const [libraryMode, setLibraryMode] = useState<'browse' | 'save'>('browse');
   const [showUnsavedPrompt, setShowUnsavedPrompt] = useState(false);
   const [loadedFromLibraryId, setLoadedFromLibraryId] = useState<string | null>(null);
+  const [loadedFromFolderId, setLoadedFromFolderId] = useState<string | null>(null);
   const pendingLoadRef = useRef<LibraryGame | null>(null);
 
   // ── Toast ──────────────────────────────────────────────────────────────────
@@ -258,8 +260,18 @@ export function BoardShell({ initialPgn, initialFen }: BoardShellProps) {
       libGame.nodeMeta,
     );
     setLoadedFromLibraryId(libGame.id);
+    setLoadedFromFolderId(libGame.folderId);
     setShowLibrary(false);
   }, [game]);
+
+  // Step to the previous/next game in the loaded game's folder without opening
+  // the library. No-op (with a toast) at the ends of the folder.
+  const loadAdjacent = useCallback(async (dir: 1 | -1) => {
+    if (!loadedFromLibraryId || !loadedFromFolderId) return;
+    const next = await getAdjacentGame(loadedFromFolderId, loadedFromLibraryId, dir);
+    if (next) doLoad(next);
+    else showToast(dir === 1 ? 'Last game in folder' : 'First game in folder');
+  }, [loadedFromLibraryId, loadedFromFolderId, doLoad, showToast]);
 
   const handleSaveToLibrary = useCallback(async (folderId: string) => {
     const payload = serializeBoardState(folderId, {
@@ -307,7 +319,7 @@ export function BoardShell({ initialPgn, initialFen }: BoardShellProps) {
   // Wrap load callbacks so a fresh PGN/FEN clears the library-loaded-game tracking.
   const handlePgnLoad = useCallback((pgn: string): boolean => {
     const ok = game.loadPgn(pgn);
-    if (ok) setLoadedFromLibraryId(null);
+    if (ok) { setLoadedFromLibraryId(null); setLoadedFromFolderId(null); }
     else showToast('Could not read that PGN — check the moves and try again');
     return ok;
   }, [game, showToast]);
@@ -315,11 +327,13 @@ export function BoardShell({ initialPgn, initialFen }: BoardShellProps) {
   const handleFenLoad = useCallback((fen: string) => {
     game.loadFen(fen);
     setLoadedFromLibraryId(null);
+    setLoadedFromFolderId(null);
   }, [game]);
 
   const handleNewGame = useCallback(() => {
     game.newGame();
     setLoadedFromLibraryId(null);
+    setLoadedFromFolderId(null);
   }, [game]);
 
   const openLibrary = useCallback((mode: 'browse' | 'save') => {
@@ -519,11 +533,11 @@ export function BoardShell({ initialPgn, initialFen }: BoardShellProps) {
 
         {/* Right panel */}
         <div
-          className="w-full lg:flex-1 lg:min-w-[220px] bg-zinc-900 rounded-md flex flex-col gap-2 lg:overflow-hidden"
+          className="w-full lg:flex-1 lg:min-w-[220px] bg-zinc-900 rounded-md flex flex-col lg:overflow-hidden"
           style={isDesktop && boardWidth > 0 ? { height: boardWidth } : undefined}
         >
-          {/* Controls */}
-          <div className="shrink-0 px-2">
+          {/* Controls — edge to edge (prev/next touch the panel edges) */}
+          <div className="shrink-0">
             <BoardControls
               onStart={game.goStart}
               onPrev={game.goPrev}
@@ -538,11 +552,14 @@ export function BoardShell({ initialPgn, initialFen }: BoardShellProps) {
               onSaveToLibrary={() => openLibrary('save')}
               onOpenLibrary={() => openLibrary('browse')}
               isLoaded={!!loadedFromLibraryId}
+              onPrevGame={() => loadAdjacent(-1)}
+              onNextGame={() => loadAdjacent(1)}
+              gameNavEnabled={!!loadedFromLibraryId && !!loadedFromFolderId}
             />
           </div>
 
-          {/* Engine lines — directly below the controls */}
-          <div className="shrink-0">
+          {/* Engine lines — directly below the controls, with a little breathing room */}
+          <div className="shrink-0 mt-1.5">
             <EngineLines
               lines={engine.lines}
               depth={engine.depth}
@@ -559,6 +576,8 @@ export function BoardShell({ initialPgn, initialFen }: BoardShellProps) {
               headers={game.headers}
               onOpen={() => setShowGameInfo(true)}
             />
+            {/* Clock strip — only renders when the PGN carried [%clk] times */}
+            <ClockDisplay current={game.current} nodeMeta={game.nodeMeta} />
           </div>
 
           {/* Moves list — capped height with its own scroll so it never grows
@@ -605,6 +624,8 @@ export function BoardShell({ initialPgn, initialFen }: BoardShellProps) {
           onSaveHere={handleSaveToLibrary}
           onLoad={handleLoadFromLibrary}
           onClose={() => setShowLibrary(false)}
+          currentGameId={loadedFromLibraryId}
+          currentFolderId={loadedFromFolderId}
         />
       )}
 

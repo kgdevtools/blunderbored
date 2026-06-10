@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useConcepts, useAllGames, useRefsForNode } from '@/hooks/useLibrary';
 import { setRef, removeRef } from '@/lib/edges';
-import { colorForFamily } from '@/lib/concepts';
+import { colorForFamily, createConcept } from '@/lib/concepts';
 
 interface RefLinkerProps {
   gameId: string;          // the saved library game the move belongs to
@@ -46,6 +46,19 @@ export function RefLinker({ gameId, sourceNodeId, moveLabel, onClose }: RefLinke
   const handleAdd = (targetType: 'game' | 'concept', targetId: string) => {
     setRef({ gameId, sourceNodeId, targetType, targetId }).catch(() => {});
   };
+
+  // Create a new concept (named from the search box) and link it in one step.
+  const handleCreateConcept = async () => {
+    try {
+      const concept = await createConcept(query.trim() || 'New Concept');
+      await setRef({ gameId, sourceNodeId, targetType: 'concept', targetId: concept.id });
+      setQuery('');
+    } catch { /* ignore */ }
+  };
+
+  // Offer +New unless an existing concept already has exactly this name.
+  const trimmed = query.trim();
+  const exactExists = concepts.some((c) => c.name.toLowerCase() === trimmed.toLowerCase());
 
   return (
     <div
@@ -110,9 +123,20 @@ export function RefLinker({ gameId, sourceNodeId, moveLabel, onClose }: RefLinke
         {/* List */}
         <div className="flex-1 min-h-0 overflow-y-auto px-2 pb-2">
           {tab === 'concept' ? (
-            filteredConcepts.length === 0
-              ? <p className="text-xs text-zinc-600 px-2 py-3">No concepts.</p>
-              : filteredConcepts.map((c) => (
+            <>
+              {/* + New concept — names from the search box, or a blank concept */}
+              {!exactExists && (
+                <button
+                  onClick={handleCreateConcept}
+                  className="flex items-center gap-2 w-full text-left px-2 py-1.5 rounded hover:bg-blue-600/20 text-sm text-blue-300 font-medium"
+                >
+                  <span className="w-2.5 h-2.5 grid place-items-center shrink-0 text-blue-300">+</span>
+                  <span className="truncate">New concept{trimmed && `: “${trimmed}”`}</span>
+                </button>
+              )}
+              {filteredConcepts.length === 0 && exactExists
+                ? null
+                : filteredConcepts.map((c) => (
                   <button
                     key={c.id}
                     onClick={() => handleAdd('concept', c.id)}
@@ -122,7 +146,8 @@ export function RefLinker({ gameId, sourceNodeId, moveLabel, onClose }: RefLinke
                     <span className="truncate">{c.name}</span>
                     {c.eco && <span className="ml-auto text-[10px] font-mono text-zinc-500">{c.eco}</span>}
                   </button>
-                ))
+                ))}
+            </>
           ) : (
             filteredGames.length === 0
               ? <p className="text-xs text-zinc-600 px-2 py-3">No other games.</p>

@@ -31,6 +31,16 @@ function PlusIcon() {
   );
 }
 
+function HamburgerIcon() {
+  return (
+    <svg {...iconProps} width={16} height={16} strokeWidth={2}>
+      <line x1="3" y1="6" x2="21" y2="6" />
+      <line x1="3" y1="12" x2="21" y2="12" />
+      <line x1="3" y1="18" x2="21" y2="18" />
+    </svg>
+  );
+}
+
 function TagIcon() {
   return (
     <svg {...iconProps}>
@@ -88,10 +98,18 @@ interface BoardControlsProps {
   onSaveToLibrary: () => void;
   onOpenLibrary: () => void;
   isLoaded: boolean;
+  // Prev/next game within the loaded library game's folder (far-left/right).
+  onPrevGame?: () => void;
+  onNextGame?: () => void;
+  gameNavEnabled?: boolean;
 }
 
 const btn =
-  'flex-1 py-1.5 rounded bg-zinc-700 hover:bg-zinc-600 disabled:opacity-30 disabled:cursor-not-allowed text-sm transition-colors';
+  'flex-1 py-1.5 rounded-sm bg-zinc-700 hover:bg-zinc-600 disabled:opacity-30 disabled:cursor-not-allowed text-sm transition-colors';
+
+// Prev/next-game buttons: distinct colour + slightly narrower than the rest.
+const gameNavBtn =
+  'flex-[0.7] py-1.5 rounded-sm bg-indigo-700 hover:bg-indigo-600 disabled:opacity-25 disabled:cursor-not-allowed text-sm text-white transition-colors';
 
 const menuItem =
   'flex items-center gap-2 w-full text-left px-3 py-1.5 hover:bg-zinc-700 text-zinc-200';
@@ -103,6 +121,7 @@ export function BoardControls({
   canPrev, canNext,
   exportPgn,
   onNewGame, onAddGameData, onSaveToLibrary, onOpenLibrary, isLoaded,
+  onPrevGame, onNextGame, gameNavEnabled,
 }: BoardControlsProps) {
   const router = useRouter();
   const [showMenu, setShowMenu] = useState(false);
@@ -186,7 +205,16 @@ export function BoardControls({
   const runAndClose = (fn: () => void) => () => { fn(); setShowMenu(false); };
 
   return (
-    <div className="relative flex gap-0.5 pt-2 border-t border-zinc-700">
+    <div className="relative flex gap-0.5">
+      {/* Prev game — far left, narrower + distinct colour */}
+      <button
+        className={gameNavBtn}
+        onClick={onPrevGame}
+        disabled={!gameNavEnabled}
+        title="Previous game in folder"
+      >
+        ◂
+      </button>
       <button className={btn} onClick={onStart} disabled={!canPrev} title="Start (Home)">⟨⟨</button>
       <button className={btn} onClick={onPrev}  disabled={!canPrev} title="Previous (←)">⟨</button>
       <button
@@ -201,14 +229,25 @@ export function BoardControls({
       <button className={btn} onClick={onEnd}   disabled={!canNext} title="End (End)">⟩⟩</button>
       <button className={btn} onClick={onFlip}  title="Flip board (F)">⇅</button>
 
-      {/* 3-dot menu trigger */}
+      {/* Menu trigger */}
       <button
         ref={triggerRef}
-        className="flex-none px-2 py-1.5 rounded bg-zinc-700 hover:bg-zinc-600 text-sm transition-colors"
+        className="flex-none grid place-items-center px-2 py-1.5 rounded-sm bg-zinc-700 hover:bg-zinc-600 text-zinc-200 transition-colors"
         onClick={() => setShowMenu((v) => !v)}
         title="More options"
+        aria-label="More options"
       >
-        ···
+        <HamburgerIcon />
+      </button>
+
+      {/* Next game — far right, narrower + distinct colour */}
+      <button
+        className={gameNavBtn}
+        onClick={onNextGame}
+        disabled={!gameNavEnabled}
+        title="Next game in folder"
+      >
+        ▸
       </button>
 
       {/* Dropdown — opens upward */}
