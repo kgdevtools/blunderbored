@@ -163,7 +163,7 @@ export function BoardShell({ initialPgn, initialFen }: BoardShellProps) {
     loadDraft()
       .then((draft) => {
         if (draft?.pgn) {
-          game.loadFromLibrary(draft.pgn, draft.headers, draft.nodeComments, draft.annotations, draft.nags);
+          game.loadFromLibrary(draft.pgn, draft.headers, draft.nodeComments, draft.annotations, draft.nags, draft.nodeMeta);
         }
       })
       .catch(() => {})
@@ -180,7 +180,9 @@ export function BoardShell({ initialPgn, initialFen }: BoardShellProps) {
     const snapshot = {
       exportPgn: game.exportPgn,
       headers: game.headers,
+      mainLine: game.mainLine,
       nodeComments: game.nodeComments,
+      nodeMeta: game.nodeMeta,
       allAnnotations: game.allAnnotations,
       nags: game.nags,
     };
@@ -191,7 +193,7 @@ export function BoardShell({ initialPgn, initialFen }: BoardShellProps) {
     }, 800);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [game.tokens, game.headers, game.nodeComments, game.allAnnotations, game.nags, game.isDirty]);
+  }, [game.tokens, game.headers, game.nodeComments, game.nodeMeta, game.allAnnotations, game.nags, game.isDirty]);
 
   // ── Desktop/mobile detection ───────────────────────────────────────────────
   const [isDesktop, setIsDesktop] = useState(true);
@@ -253,6 +255,7 @@ export function BoardShell({ initialPgn, initialFen }: BoardShellProps) {
       libGame.nodeComments,
       libGame.annotations,
       libGame.nags,
+      libGame.nodeMeta,
     );
     setLoadedFromLibraryId(libGame.id);
     setShowLibrary(false);
@@ -262,7 +265,9 @@ export function BoardShell({ initialPgn, initialFen }: BoardShellProps) {
     const payload = serializeBoardState(folderId, {
       exportPgn: game.exportPgn,
       headers: game.headers,
+      mainLine: game.mainLine,
       nodeComments: game.nodeComments,
+      nodeMeta: game.nodeMeta,
       allAnnotations: game.allAnnotations,
       nags: game.nags,
     });
@@ -472,8 +477,8 @@ export function BoardShell({ initialPgn, initialFen }: BoardShellProps) {
         {/* Outer wrapper has CSS-intrinsic dimensions so getBoundingClientRect()
             always returns a real value regardless of device or SSR state. */}
         <div
-          className="flex gap-1.5 items-start shrink-0"
-          style={{ width: 'min(90vw, 90vh, 560px)', maxWidth: '100%' }}
+          className="flex gap-px lg:gap-1.5 items-start shrink-0"
+          style={{ width: 'min(100vw, 90vh, 560px)', maxWidth: '100%' }}
         >
           {boardWidth > 0 && (
             <EvalBar
@@ -517,8 +522,8 @@ export function BoardShell({ initialPgn, initialFen }: BoardShellProps) {
           className="w-full lg:flex-1 lg:min-w-[220px] bg-zinc-900 rounded-md flex flex-col gap-2 lg:overflow-hidden"
           style={isDesktop && boardWidth > 0 ? { height: boardWidth } : undefined}
         >
-          {/* Controls — first on mobile (order-1), last on desktop (order-3) */}
-          <div className="order-1 lg:order-3 shrink-0 px-2">
+          {/* Controls */}
+          <div className="shrink-0 px-2">
             <BoardControls
               onStart={game.goStart}
               onPrev={game.goPrev}
@@ -536,28 +541,8 @@ export function BoardShell({ initialPgn, initialFen }: BoardShellProps) {
             />
           </div>
 
-          {/* Moves list — second on mobile (order-2), first on desktop (order-1) */}
-          <div className="order-2 lg:order-1 lg:flex-1 lg:overflow-y-auto lg:min-h-0 mx-2">
-            <GameInfoHeader
-              headers={game.headers}
-              onOpen={() => setShowGameInfo(true)}
-            />
-            <MovesList
-              tokens={game.tokens}
-              current={game.current}
-              onSelect={game.goTo}
-              onDeleteMove={game.deleteMove}
-              onDeleteAfter={game.deleteAfter}
-              comments={game.nodeComments}
-              onSetComment={game.setNodeComment}
-              nags={game.nags}
-              onSetNags={game.setNodeNags}
-              gameId={loadedFromLibraryId}
-            />
-          </div>
-
-          {/* Engine lines — third on mobile (order-3), second on desktop (order-2) */}
-          <div className="order-3 lg:order-2 shrink-0">
+          {/* Engine lines — directly below the controls */}
+          <div className="shrink-0">
             <EngineLines
               lines={engine.lines}
               depth={engine.depth}
@@ -565,6 +550,32 @@ export function BoardShell({ initialPgn, initialFen }: BoardShellProps) {
               enabled={engine.enabled}
               onToggle={engine.toggleEngine}
               currentFen={game.currentFen}
+            />
+          </div>
+
+          {/* Game metadata — above the moves list */}
+          <div className="shrink-0 mx-2">
+            <GameInfoHeader
+              headers={game.headers}
+              onOpen={() => setShowGameInfo(true)}
+            />
+          </div>
+
+          {/* Moves list — capped height with its own scroll so it never grows
+              unbounded on mobile; fills the remaining panel height on desktop. */}
+          <div className="mx-2 max-h-[45vh] overflow-y-auto lg:max-h-none lg:flex-1 lg:min-h-0">
+            <MovesList
+              tokens={game.tokens}
+              current={game.current}
+              onSelect={game.goTo}
+              onDeleteMove={game.deleteMove}
+              onDeleteAfter={game.deleteAfter}
+              comments={game.nodeComments}
+              meta={game.nodeMeta}
+              onSetComment={game.setNodeComment}
+              nags={game.nags}
+              onSetNags={game.setNodeNags}
+              gameId={loadedFromLibraryId}
             />
           </div>
         </div>

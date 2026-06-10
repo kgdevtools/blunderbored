@@ -1,7 +1,7 @@
 'use client';
 import { useState, useRef, useCallback } from 'react';
 import { useFolderGames } from '@/hooks/useLibrary';
-import { updateGame, deleteGame, importGames, parsePgnGames, deriveTitle } from '@/lib/library';
+import { updateGame, deleteGame, parsePgnGames, deriveTitle, analyzeImport, addParsedGames, replaceWithParsed, type ImportAnalysis } from '@/lib/library';
 import type { LibraryGame } from '@/lib/db';
 import { GameInfoModal } from './GameInfoModal';
 
@@ -208,6 +208,8 @@ export function LibraryGameList({ folderId, mode, onLoad, onSaveHere }: LibraryG
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [importing, setImporting] = useState(false);
   const [importResult, setImportResult] = useState<string | null>(null);
+  // Set when an import contains games that already exist — drives the resolve modal.
+  const [conflict, setConflict] = useState<ImportAnalysis | null>(null);
 
   const handleImportPgn = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -223,17 +225,44 @@ export function LibraryGameList({ folderId, mode, onLoad, onSaveHere }: LibraryG
         setImportResult('No valid games found in the file.');
         return;
       }
-      const { saved, dupes } = await importGames(folderId, parsed);
-      const msg = dupes > 0
-        ? `${saved} game${saved !== 1 ? 's' : ''} imported, ${dupes} duplicate${dupes !== 1 ? 's' : ''} skipped`
-        : `${saved} game${saved !== 1 ? 's' : ''} imported`;
-      setImportResult(msg);
+      const analysis = await analyzeImport(folderId, parsed);
+      if (analysis.conflicts.length === 0) {
+        const added = await addParsedGames(folderId, analysis.fresh);
+        setImportResult(`${added} game${added !== 1 ? 's' : ''} imported`);
+      } else {
+        setConflict(analysis); // ask the user how to resolve
+      }
     } catch {
       setImportResult('Failed to import — check the file and try again.');
     } finally {
       setImporting(false);
     }
   }, [folderId]);
+
+  // Apply the user's conflict choice and run the deferred import.
+  const resolveImport = useCallback(async (action: 'skip' | 'replace' | 'keep') => {
+    if (!conflict || !folderId) return;
+    const { fresh, conflicts } = conflict;
+    setConflict(null);
+    setImporting(true);
+    try {
+      const toAdd = action === 'keep' ? [...fresh, ...conflicts.map((c) => c.incoming)] : fresh;
+      const added = await addParsedGames(folderId, toAdd);
+      let replaced = 0;
+      if (action === 'replace') {
+        for (const c of conflicts) { await replaceWithParsed(c.existingId, c.incoming); replaced++; }
+      }
+      const skipped = action === 'skip' ? conflicts.length : 0;
+      const parts = [`${added} imported`];
+      if (replaced) parts.push(`${replaced} replaced`);
+      if (skipped) parts.push(`${skipped} skipped`);
+      setImportResult(parts.join(', '));
+    } catch {
+      setImportResult('Failed to import — check the file and try again.');
+    } finally {
+      setImporting(false);
+    }
+  }, [conflict, folderId]);
 
   // ── Empty / no folder states ───────────────────────────────────────────────
   if (!folderId) {
@@ -310,6 +339,82 @@ export function LibraryGameList({ folderId, mode, onLoad, onSaveHere }: LibraryG
           className="hidden"
           onChange={handleImportPgn}
         />
+      </div>
+
+      {conflict && (
+        <ImportConflictModal
+          analysis={conflict}
+          onResolve={resolveImport}
+          onCancel={() => setConflict(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+// ─── Import conflict resolution modal ─────────────────────────────────────────
+
+function ImportConflictModal({
+  analysis,
+  onResolve,
+  onCancel,
+}: {
+  analysis: ImportAnalysis;
+  onResolve: (action: 'skip' | 'replace' | 'keep') => void;
+  onCancel: () => void;
+}) {
+  const { fresh, conflicts } = analysis;
+  return (
+    <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/60 p-4" onClick={onCancel}>
+      <div
+        className="bg-zinc-800 border border-zinc-700 rounded-lg shadow-2xl w-full max-w-sm flex flex-col max-h-[80vh]"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="px-4 pt-4 pb-2 shrink-0">
+          <h3 className="text-sm font-semibold text-zinc-100">
+            {conflicts.length} duplicate{conflicts.length !== 1 ? 's' : ''} found
+          </h3>
+          <p className="text-xs text-zinc-400 mt-1">
+            {conflicts.length === 1 ? 'This game is' : 'These games are'} already in this folder
+            {fresh.length > 0 && ` · ${fresh.length} new game${fresh.length !== 1 ? 's' : ''} will import either way`}.
+          </p>
+        </div>
+
+        <ul className="px-4 py-1 overflow-y-auto text-xs text-zinc-300 space-y-0.5 min-h-0">
+          {conflicts.map((c, i) => (
+            <li key={i} className="truncate flex gap-1.5">
+              <span className="text-zinc-600 tabular-nums shrink-0">{i + 1}.</span>
+              <span className="truncate">{c.existingTitle}</span>
+            </li>
+          ))}
+        </ul>
+
+        <div className="px-4 pt-3 pb-4 flex flex-col gap-1.5 shrink-0 border-t border-zinc-700/60 mt-2">
+          <button
+            onClick={() => onResolve('skip')}
+            className="w-full py-1.5 rounded bg-zinc-700 hover:bg-zinc-600 text-zinc-100 text-xs font-semibold transition-colors"
+          >
+            Skip duplicates {fresh.length > 0 && `(import ${fresh.length} new only)`}
+          </button>
+          <button
+            onClick={() => onResolve('replace')}
+            className="w-full py-1.5 rounded bg-amber-700 hover:bg-amber-600 text-white text-xs font-semibold transition-colors"
+          >
+            Replace existing with imported
+          </button>
+          <button
+            onClick={() => onResolve('keep')}
+            className="w-full py-1.5 rounded bg-zinc-700 hover:bg-zinc-600 text-zinc-100 text-xs font-semibold transition-colors"
+          >
+            Keep both (import as copies)
+          </button>
+          <button
+            onClick={onCancel}
+            className="w-full py-1.5 rounded text-zinc-400 hover:text-zinc-200 text-xs transition-colors"
+          >
+            Cancel
+          </button>
+        </div>
       </div>
     </div>
   );

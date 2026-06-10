@@ -1,6 +1,8 @@
 import { nanoid } from 'nanoid';
 import { db, LibraryFolder, LibraryGame, GraphEdge, StoredAnnotation, BoardDraft } from './db';
 import type { GameReview } from './analysis';
+import type { GameNode, NodeAnnotation, NodeMeta } from './gameTree';
+import { parseGameAnnotations } from './pgnImport';
 import { ensureOpeningConcept, ensureOpeningHierarchy } from './concepts';
 import { ensureConceptGameEdge, deleteEdgesForGame } from './edges';
 
@@ -133,18 +135,7 @@ export async function importGames(
     const fp = movesFingerprint(g.pgn);
     if (!fp || seen.has(fp)) { dupes++; continue; }
     seen.add(fp);
-    rows.push({
-      id: nanoid(),
-      folderId,
-      title: g.title,
-      pgn: g.pgn,
-      headers: g.headers,
-      nodeComments: {},
-      annotations: {},
-      reviewData: null,
-      createdAt: now,
-      updatedAt: now,
-    });
+    rows.push(buildGameRow(folderId, g, now));
   }
 
   if (rows.length === 0) return { saved: 0, dupes };
@@ -152,6 +143,91 @@ export async function importGames(
   await db.games.bulkAdd(rows);
   await seedConceptsForGames(rows);
   return { saved: rows.length, dupes };
+}
+
+// Builds a LibraryGame row, parsing the PGN's own comments / clk / eval / arrows
+// / NAGs into ply-keyed structured data so an imported game shows its
+// annotations on the board — the same data the board produces loading the PGN.
+function buildGameRow(folderId: string, g: ParsedPgnGame, now: number): LibraryGame {
+  const ann = parseGameAnnotations(g.pgn);
+  return {
+    id: nanoid(),
+    folderId,
+    title: g.title,
+    pgn: g.pgn,
+    headers: g.headers,
+    nodeComments: ann?.nodeComments ?? {},
+    nodeMeta: ann?.nodeMeta ?? {},
+    annotations: ann?.annotations ?? {},
+    nags: ann?.nags ?? {},
+    reviewData: null,
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+// ─── Import with conflict resolution ──────────────────────────────────────────
+
+export interface ImportConflict {
+  incoming: ParsedPgnGame;
+  existingId: string;
+  existingTitle: string;
+}
+
+export interface ImportAnalysis {
+  fresh: ParsedPgnGame[];      // no existing match — safe to add
+  conflicts: ImportConflict[]; // same moves as a game already in the folder
+}
+
+// Splits a parsed batch into brand-new games and ones that duplicate an existing
+// game in the folder, so the UI can ask the user how to resolve rather than
+// silently skipping. Intra-batch duplicates are collapsed to the first instance.
+export async function analyzeImport(
+  folderId: string,
+  parsed: ParsedPgnGame[],
+): Promise<ImportAnalysis> {
+  const existing = await db.games.where('folderId').equals(folderId).toArray();
+  const fpToExisting = new Map(existing.map((g) => [movesFingerprint(g.pgn), g]));
+
+  const seen = new Set<string>();
+  const fresh: ParsedPgnGame[] = [];
+  const conflicts: ImportConflict[] = [];
+  for (const g of parsed) {
+    const fp = movesFingerprint(g.pgn);
+    if (!fp || seen.has(fp)) continue;
+    seen.add(fp);
+    const ex = fpToExisting.get(fp);
+    if (ex) conflicts.push({ incoming: g, existingId: ex.id, existingTitle: ex.title });
+    else fresh.push(g);
+  }
+  return { fresh, conflicts };
+}
+
+// Adds already-vetted games (no dup check — the caller resolved conflicts).
+export async function addParsedGames(folderId: string, games: ParsedPgnGame[]): Promise<number> {
+  if (games.length === 0) return 0;
+  const now = Date.now();
+  const rows = games.map((g) => buildGameRow(folderId, g, now));
+  await db.games.bulkAdd(rows);
+  await seedConceptsForGames(rows);
+  return rows.length;
+}
+
+// Overwrites an existing game's moves/headers/annotations with an incoming PGN.
+export async function replaceWithParsed(existingId: string, g: ParsedPgnGame): Promise<void> {
+  const ann = parseGameAnnotations(g.pgn);
+  await db.games.update(existingId, {
+    title: g.title,
+    pgn: g.pgn,
+    headers: g.headers,
+    nodeComments: ann?.nodeComments ?? {},
+    nodeMeta: ann?.nodeMeta ?? {},
+    annotations: ann?.annotations ?? {},
+    nags: ann?.nags ?? {},
+    updatedAt: Date.now(),
+  });
+  const updated = await db.games.get(existingId);
+  if (updated) await seedConceptsForGame(updated);
 }
 
 // Batch concept seeding: ensure each unique ECO concept once, then bulk-add the
@@ -194,9 +270,36 @@ async function seedConceptsForGames(rows: LibraryGame[]): Promise<void> {
 export interface BoardStateSnapshot {
   exportPgn: () => string;
   headers: Record<string, string>;
-  nodeComments: Map<string, string>;
+  // The main line (root first), used to translate session-only node ids into the
+  // stable ply keys everything is persisted under.
+  mainLine: GameNode[];
+  nodeComments: Map<string, NodeAnnotation[]>;
+  nodeMeta?: Map<string, NodeMeta>;
   allAnnotations: Map<string, StoredAnnotation>;
   nags?: Map<string, number[]>;
+}
+
+// Persisted per-node data is keyed by main-line position, not the ephemeral node
+// id, so it round-trips a save → reload regardless of when the tree was built.
+// 'root' is the start position; move plies are '0','1',… Variation nodes have no
+// ply and are dropped on save (they're not in the exported main-line PGN either).
+function buildIdToPly(mainLine: GameNode[]): Map<string, string> {
+  const m = new Map<string, string>();
+  mainLine.forEach((n, i) => m.set(n.id, i === 0 ? 'root' : String(i - 1)));
+  return m;
+}
+
+function remapToPly<T>(
+  src: Map<string, T> | undefined,
+  idToPly: Map<string, string>,
+  keep: (v: T) => boolean,
+): Record<string, T> {
+  const out: Record<string, T> = {};
+  src?.forEach((v, id) => {
+    const k = idToPly.get(id);
+    if (k !== undefined && keep(v)) out[k] = v;
+  });
+  return out;
 }
 
 export function serializeBoardState(
@@ -206,14 +309,11 @@ export function serializeBoardState(
 ): SaveGamePayload {
   const pgn = snapshot.exportPgn();
 
-  const nodeComments: Record<string, string> = {};
-  snapshot.nodeComments.forEach((v, k) => { nodeComments[k] = v; });
-
-  const annotations: Record<string, StoredAnnotation> = {};
-  snapshot.allAnnotations.forEach((v, k) => { annotations[k] = v; });
-
-  const nags: Record<string, number[]> = {};
-  snapshot.nags?.forEach((v, k) => { if (v.length) nags[k] = v; });
+  const idToPly = buildIdToPly(snapshot.mainLine);
+  const nodeComments = remapToPly(snapshot.nodeComments, idToPly, (v) => v.length > 0);
+  const nodeMeta = remapToPly(snapshot.nodeMeta, idToPly, () => true);
+  const annotations = remapToPly(snapshot.allAnnotations, idToPly, () => true);
+  const nags = remapToPly(snapshot.nags, idToPly, (v) => v.length > 0);
 
   return {
     folderId,
@@ -221,6 +321,7 @@ export function serializeBoardState(
     pgn,
     headers: { ...snapshot.headers },
     nodeComments,
+    nodeMeta,
     annotations,
     nags,
     reviewData: reviewData ?? null,
@@ -234,12 +335,13 @@ const DRAFT_ID = 'board-current';
 export async function saveDraft(snapshot: BoardStateSnapshot): Promise<void> {
   // Reuse the library serializer (Map → Record conversion) then drop the
   // library-only fields the draft doesn't need.
-  const { pgn, headers, nodeComments, annotations, nags } = serializeBoardState('', snapshot);
+  const { pgn, headers, nodeComments, nodeMeta, annotations, nags } = serializeBoardState('', snapshot);
   const draft: BoardDraft = {
     id: DRAFT_ID,
     pgn,
     headers,
     nodeComments,
+    nodeMeta,
     annotations,
     nags,
     updatedAt: Date.now(),

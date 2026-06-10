@@ -1,5 +1,6 @@
 import Dexie, { type EntityTable } from 'dexie';
 import type { GameReview } from './analysis';
+import type { NodeAnnotation, NodeMeta } from './gameTree';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -28,7 +29,8 @@ export interface LibraryGame {
   title: string;
   pgn: string;
   headers: Record<string, string>;
-  nodeComments: Record<string, string>;       // nodeId → comment text
+  nodeComments: Record<string, NodeAnnotation[]>; // nodeId → source-tagged comments (v4; was string pre-v4)
+  nodeMeta?: Record<string, NodeMeta>;         // nodeId → clk/eval parsed from PGN. Optional: pre-v4 rows lack it.
   annotations: Record<string, StoredAnnotation>; // nodeId → arrows/highlights
   nags?: Record<string, number[]>;             // nodeId → NAG codes (e.g. [1] = !). Optional: pre-v3 rows lack it.
   reviewData: GameReview | null;
@@ -73,10 +75,27 @@ export interface BoardDraft {
   id: string; // always 'board-current'
   pgn: string;
   headers: Record<string, string>;
-  nodeComments: Record<string, string>;
+  nodeComments: Record<string, NodeAnnotation[]>;
+  nodeMeta?: Record<string, NodeMeta>;
   annotations: Record<string, StoredAnnotation>;
   nags?: Record<string, number[]>;
   updatedAt: number;
+}
+
+// v3→v4 conversion: nodeComments moved from a single string per node to a list
+// of source-tagged annotations. Existing comments were user-authored, so they
+// become source 'manual'.
+function migrateNodeComments(old: unknown): Record<string, NodeAnnotation[]> {
+  const out: Record<string, NodeAnnotation[]> = {};
+  if (!old || typeof old !== 'object') return out;
+  for (const [nodeId, val] of Object.entries(old as Record<string, unknown>)) {
+    if (typeof val === 'string') {
+      if (val.trim()) out[nodeId] = [{ source: 'manual', text: val }];
+    } else if (Array.isArray(val)) {
+      out[nodeId] = val as NodeAnnotation[]; // already migrated
+    }
+  }
+  return out;
 }
 
 // ─── Database ─────────────────────────────────────────────────────────────────
@@ -104,6 +123,17 @@ export class ChessAcademyDB extends Dexie {
     this.version(3).stores({
       conceptNodes: 'id, family, kind, eco, origin, updatedAt',
       graphEdges:   'id, type, source, target, sourceNodeId, origin, updatedAt, [source+type], [target+type]',
+    });
+    // v4 makes nodeComments source-tagged (string → NodeAnnotation[]) and adds
+    // the optional nodeMeta (clk/eval). No index changes — data-only upgrade
+    // over games + drafts. nodeMeta defaults to undefined, so no backfill needed.
+    this.version(4).stores({}).upgrade(async (tx) => {
+      await tx.table('games').toCollection().modify((g) => {
+        g.nodeComments = migrateNodeComments(g.nodeComments);
+      });
+      await tx.table('drafts').toCollection().modify((d) => {
+        d.nodeComments = migrateNodeComments(d.nodeComments);
+      });
     });
   }
 }

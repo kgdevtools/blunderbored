@@ -25,7 +25,45 @@ import {
   flattenTree,
   deleteMovesAfterNode,
   sanitizePgn,
+  type NodeAnnotation,
+  type NodeMeta,
 } from '@/lib/gameTree';
+import { extractNodeData } from '@/lib/pgnImport';
+
+// Builds the per-node arrow/highlight state (incl. an undo history) from the
+// arrows/highlights recovered out of a PGN's [%cal]/[%csl] tokens.
+function annotationsFromImport(
+  imported: Map<string, { arrows: [string, string][]; highlights: string[] }>,
+): Map<string, NodeAnnotations> {
+  const out = new Map<string, NodeAnnotations>();
+  for (const [id, { arrows, highlights }] of imported) {
+    out.set(id, {
+      arrows,
+      highlights,
+      history: [
+        ...arrows.map(([from, to]) => ({ kind: 'arrow', from, to } as HistoryEntry)),
+        ...highlights.map((square) => ({ kind: 'highlight', square } as HistoryEntry)),
+      ],
+    });
+  }
+  return out;
+}
+
+// Persisted per-node data is keyed by main-line ply ('root' | '0' | '1' | …).
+// Translate those stable keys back onto the freshly-rebuilt tree's node ids.
+function mapFromPly<T>(
+  rec: Record<string, T> | undefined,
+  root: GameNode,
+  mainNodes: GameNode[],
+): Map<string, T> {
+  const out = new Map<string, T>();
+  if (!rec) return out;
+  for (const [key, val] of Object.entries(rec)) {
+    const node = key === 'root' ? root : mainNodes[Number(key)];
+    if (node) out.set(node.id, val);
+  }
+  return out;
+}
 
 export function useBoardGame() {
   const initialRoot = createRootNode(DEFAULT_POSITION);
@@ -33,7 +71,8 @@ export function useBoardGame() {
   const [current, setCurrent] = useState<GameNode>(initialRoot);
   const [flipped, setFlipped] = useState(false);
   const [headers, setHeadersState] = useState<Record<string, string>>({});
-  const [nodeComments, setNodeCommentsMap] = useState<Map<string, string>>(new Map());
+  const [nodeComments, setNodeCommentsMap] = useState<Map<string, NodeAnnotation[]>>(new Map());
+  const [nodeMeta, setNodeMetaMap] = useState<Map<string, NodeMeta>>(new Map());
   const [nags, setNagsMap] = useState<Map<string, number[]>>(new Map());
   // Incremented whenever the tree is structurally mutated (addMove) so memoised
   // consumers that depend on [root] get fresh values despite the in-place mutation.
@@ -78,17 +117,24 @@ export function useBoardGame() {
 
     const startFen = history[0]?.before ?? DEFAULT_POSITION;
     const newRoot = createRootNode(startFen);
+    const mainNodes: GameNode[] = [];
     let node = newRoot;
     for (const move of history) {
       node = addMove(node, move, move.after);
+      mainNodes.push(node);
     }
+
+    // Recover comments / clk / eval / arrows / NAGs the PGN carried instead of
+    // dropping them; original comments come in tagged source 'pgn'.
+    const data = extractNodeData(chess, clean, newRoot, mainNodes);
 
     setRoot(newRoot);
     setCurrent(node);
     setTreeVersion(0);
-    setAnnotations(new Map());
-    setNodeCommentsMap(new Map());
-    setNagsMap(new Map());
+    setAnnotations(annotationsFromImport(data.annotations));
+    setNodeCommentsMap(data.comments);
+    setNodeMetaMap(data.meta);
+    setNagsMap(data.nags);
     return true;
   }, []);
 
@@ -110,6 +156,7 @@ export function useBoardGame() {
     setTreeVersion(0);
     setAnnotations(new Map());
     setNodeCommentsMap(new Map());
+    setNodeMetaMap(new Map());
     setNagsMap(new Map());
   }, []);
 
@@ -121,14 +168,22 @@ export function useBoardGame() {
     setTreeVersion(0);
     setAnnotations(new Map());
     setNodeCommentsMap(new Map());
+    setNodeMetaMap(new Map());
     setNagsMap(new Map());
     setHeadersState({});
   }, []);
 
+  // Edits only the user's own ('manual') comment on a node — comments imported
+  // from the PGN ('pgn') or written by the reviewer ('reviewer') are preserved.
   const setNodeComment = useCallback((nodeId: string, text: string) => {
     setNodeCommentsMap(prev => {
       const next = new Map(prev);
-      if (text.trim()) next.set(nodeId, text.trim());
+      const others = (next.get(nodeId) ?? []).filter((a) => a.source !== 'manual');
+      const trimmed = text.trim();
+      const updated: NodeAnnotation[] = trimmed
+        ? [...others, { source: 'manual', text: trimmed }]
+        : others;
+      if (updated.length) next.set(nodeId, updated);
       else next.delete(nodeId);
       return next;
     });
@@ -178,11 +233,12 @@ export function useBoardGame() {
 
   const exportPgn = useCallback(() => toMainLinePgn(root, headers, {
     comments: nodeComments,
+    meta: nodeMeta,
     annotations: new Map(
       [...annotations.entries()].map(([id, ann]) => [id, { arrows: ann.arrows, highlights: ann.highlights }])
     ),
     nags,
-  }), [root, headers, nodeComments, annotations, nags]);
+  }), [root, headers, nodeComments, nodeMeta, annotations, nags]);
 
   // ─── Tree editing ─────────────────────────────────────────────────────────
 
@@ -217,9 +273,10 @@ export function useBoardGame() {
   const loadFromLibrary = useCallback((
     pgn: string,
     savedHeaders: Record<string, string>,
-    savedComments: Record<string, string>,
+    savedComments: Record<string, NodeAnnotation[]>,
     savedAnnotations: Record<string, StoredAnnotation>,
     savedNags?: Record<string, number[]>,
+    savedMeta?: Record<string, NodeMeta>,
   ) => {
     const chess = new Chess();
     try {
@@ -231,20 +288,21 @@ export function useBoardGame() {
 
     const startFen = history[0]?.before ?? DEFAULT_POSITION;
     const newRoot = createRootNode(startFen);
+    const mainNodes: GameNode[] = [];
     let node = newRoot;
     for (const move of history) {
       node = addMove(node, move, move.after);
+      mainNodes.push(node);
     }
 
     setRoot(newRoot);
     setCurrent(node);
     setTreeVersion(0);
     setHeadersState({ ...savedHeaders });
-    setNodeCommentsMap(new Map(Object.entries(savedComments)));
-    setNagsMap(new Map(Object.entries(savedNags ?? {})));
-    setAnnotations(new Map(
-      Object.entries(savedAnnotations).map(([k, v]) => [k, v as NodeAnnotations]),
-    ));
+    setNodeCommentsMap(mapFromPly(savedComments, newRoot, mainNodes));
+    setNodeMetaMap(mapFromPly(savedMeta, newRoot, mainNodes));
+    setNagsMap(mapFromPly(savedNags, newRoot, mainNodes));
+    setAnnotations(mapFromPly(savedAnnotations, newRoot, mainNodes) as Map<string, NodeAnnotations>);
   }, []);
 
   // ─── Annotations ──────────────────────────────────────────────────────────
@@ -340,6 +398,7 @@ export function useBoardGame() {
     exportPgn,
     nodeComments,
     setNodeComment,
+    nodeMeta,
     nags,
     setNodeNags,
     // Annotations (derived from current node)

@@ -1,8 +1,17 @@
 'use client';
 import { Fragment, useEffect, useRef, useState } from 'react';
-import type { GameNode, MoveListToken } from '@/lib/gameTree';
+import type { GameNode, MoveListToken, NodeAnnotation, NodeMeta, AnnoSource } from '@/lib/gameTree';
+import { formatSeconds } from '@/lib/clock';
 import { scrollActiveIntoView } from '@/lib/scroll';
 import { RefLinker } from './RefLinker';
+
+// Comment text colour by provenance, so imported / manual / reviewer notes are
+// visually distinct where they sit side by side on a move.
+const SOURCE_STYLE: Record<AnnoSource, string> = {
+  pgn: 'text-zinc-400 italic',
+  manual: 'text-amber-300',
+  reviewer: 'text-sky-300',
+};
 
 interface MovesListProps {
   tokens: MoveListToken[];
@@ -10,7 +19,8 @@ interface MovesListProps {
   onSelect: (node: GameNode) => void;
   onDeleteMove: (node: GameNode) => void;
   onDeleteAfter: (node: GameNode) => void;
-  comments?: Map<string, string>;
+  comments?: Map<string, NodeAnnotation[]>;
+  meta?: Map<string, NodeMeta>;
   onSetComment?: (nodeId: string, text: string) => void;
   nags?: Map<string, number[]>;
   onSetNags?: (nodeId: string, codes: number[]) => void;
@@ -45,7 +55,13 @@ interface CtxMenu {
   node: GameNode;
 }
 
-export function MovesList({ tokens, current, onSelect, onDeleteMove, onDeleteAfter, comments, onSetComment, nags, onSetNags, gameId }: MovesListProps) {
+// The user-editable ('manual') comment on a node, if any — what the inline
+// editor binds to. Imported and reviewer comments are read-only here.
+function manualText(annos: NodeAnnotation[] | undefined): string {
+  return annos?.find((a) => a.source === 'manual')?.text ?? '';
+}
+
+export function MovesList({ tokens, current, onSelect, onDeleteMove, onDeleteAfter, comments, meta, onSetComment, nags, onSetNags, gameId }: MovesListProps) {
   const activeRef = useRef<HTMLButtonElement>(null);
   const [ctxMenu, setCtxMenu] = useState<CtxMenu | null>(null);
   const [editingNodeId, setEditingNodeId] = useState<string | null>(null);
@@ -113,7 +129,9 @@ export function MovesList({ tokens, current, onSelect, onDeleteMove, onDeleteAft
           const isBlack = node.move!.color === 'b';
           const moveNum = getMoveNumber(node);
           const isVariation = variationDepth > 0;
-          const comment = comments?.get(node.id);
+          const annos = comments?.get(node.id) ?? [];
+          const hasComment = annos.length > 0;
+          const clk = meta?.get(node.id)?.clk;
           const isEditing = editingNodeId === node.id;
           const nagInfo = NAG_BY_CODE.get(nags?.get(node.id)?.[0] ?? -1);
 
@@ -145,7 +163,7 @@ export function MovesList({ tokens, current, onSelect, onDeleteMove, onDeleteAft
                     'font-mono rounded px-1 transition-colors select-none',
                     isVariation ? 'text-xs text-zinc-400 hover:bg-zinc-700' : 'text-white hover:bg-zinc-600',
                     // A commented move is shaded rather than dotted; active (blue) wins.
-                    comment && !isActive ? 'bg-amber-500/15' : '',
+                    hasComment && !isActive ? 'bg-amber-500/15' : '',
                     isActive ? 'bg-blue-600 text-white font-semibold hover:bg-blue-500' : '',
                   ].join(' ')}
                 >
@@ -154,14 +172,21 @@ export function MovesList({ tokens, current, onSelect, onDeleteMove, onDeleteAft
                     <span className={`font-bold ${isActive ? 'text-white' : nagInfo.color}`}>{nagInfo.glyph}</span>
                   )}
                 </button>
+                {/* Clock remaining after this move, when the PGN carried [%clk]. */}
+                {clk != null && (
+                  <span className="font-mono text-[10px] text-zinc-500 tabular-nums ml-0.5">{formatSeconds(clk)}</span>
+                )}
               </span>
 
-              {/* Comment display */}
-              {comment && !isEditing && (
-                <span className="mx-1 text-xs text-zinc-400 tracking-tightest leading-tight font-[family-name:var(--font-jetbrains-mono)]">
-                  {comment}
+              {/* Comment display — one span per source, colour-coded by provenance. */}
+              {hasComment && !isEditing && annos.map((a, ai) => (
+                <span
+                  key={ai}
+                  className={`mx-1 text-xs tracking-tightest leading-tight font-[family-name:var(--font-jetbrains-mono)] ${SOURCE_STYLE[a.source]}`}
+                >
+                  {a.text}
                 </span>
-              )}
+              ))}
 
               {/* Inline comment editor */}
               {isEditing && (
@@ -171,14 +196,14 @@ export function MovesList({ tokens, current, onSelect, onDeleteMove, onDeleteAft
                     autoFocus
                     className="w-full text-xs px-2 py-1.5 rounded bg-zinc-700 border border-zinc-600 text-zinc-100 resize-none focus:outline-none focus:border-blue-500"
                     rows={2}
-                    defaultValue={comment ?? ''}
+                    defaultValue={manualText(annos)}
                     onBlur={(e) => handleSaveComment(node.id, e.target.value)}
                     onKeyDown={(e) => {
                       if (e.key === 'Enter' && !e.shiftKey) {
                         e.preventDefault();
                         handleSaveComment(node.id, (e.target as HTMLTextAreaElement).value);
                       }
-                      if (e.key === 'Escape') handleSaveComment(node.id, comment ?? '');
+                      if (e.key === 'Escape') handleSaveComment(node.id, manualText(annos));
                     }}
                     placeholder="Add a comment…"
                   />
@@ -227,9 +252,9 @@ export function MovesList({ tokens, current, onSelect, onDeleteMove, onDeleteAft
                 className="block w-full text-left px-3 py-1.5 hover:bg-zinc-700 text-zinc-200"
                 onClick={() => handleAddComment(ctxMenu.node)}
               >
-                {comments?.get(ctxMenu.node.id) ? 'Edit Comment' : 'Add Comment'}
+                {manualText(comments?.get(ctxMenu.node.id)) ? 'Edit Comment' : 'Add Comment'}
               </button>
-              {comments?.get(ctxMenu.node.id) && (
+              {manualText(comments?.get(ctxMenu.node.id)) && (
                 <button
                   className="block w-full text-left px-3 py-1.5 hover:bg-zinc-700 text-red-400"
                   onClick={() => { onSetComment(ctxMenu.node.id, ''); setCtxMenu(null); }}

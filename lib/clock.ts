@@ -33,6 +33,16 @@ export function parseClocks(pgn: string): ClockData | null {
   return { remaining, spent, increment };
 }
 
+// PGN [%clk] form: always H:MM:SS (hours not zero-padded), e.g. "0:09:58".
+// Fractional seconds are dropped — PGN clk is whole-second in practice.
+export function formatClk(s: number): string {
+  if (s < 0) s = 0;
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = Math.floor(s % 60);
+  return `${h}:${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
+}
+
 // Compact mm:ss (or h:mm:ss) for display.
 export function formatSeconds(s: number): string {
   if (s < 0) s = 0;

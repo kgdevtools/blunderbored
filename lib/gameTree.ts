@@ -1,4 +1,5 @@
 import type { Move } from 'chess.js';
+import { formatClk } from './clock';
 
 export interface GameNode {
   id: string;
@@ -6,6 +7,26 @@ export interface GameNode {
   move: Move | null;      // null for the root node
   parent: GameNode | null;
   children: GameNode[];   // children[0] is the main-line continuation
+}
+
+// ─── Per-node annotation model ────────────────────────────────────────────────
+
+// Where a comment came from. Sources coexist on a node and are colour-coded in
+// the UI; the original PGN's comments ('pgn') are never overwritten when the
+// user ('manual') or the game reviewer ('reviewer') add their own.
+export type AnnoSource = 'pgn' | 'manual' | 'reviewer';
+
+export interface NodeAnnotation {
+  source: AnnoSource;
+  text: string;
+}
+
+// Clock/eval data parsed from a move's PGN comment ([%clk] / [%eval]). Kept
+// separate from free-text comments so it can drive time/eval UI and round-trip
+// back to PGN without being mixed into the displayed prose.
+export interface NodeMeta {
+  clk?: number;      // seconds remaining on the mover's clock after this ply
+  evalText?: string; // raw eval token, e.g. "+0.24" or "#-3"
 }
 
 // Normalises PGN text that mobile keyboards / clipboards mangle: curly quotes
@@ -60,7 +81,11 @@ export function getPathFromRoot(node: GameNode): GameNode[] {
 
 // Optional per-node extras included when serialising to PGN.
 export interface PgnExtras {
-  comments?: Map<string, string>;
+  // One node can carry comments from several sources; they're concatenated into
+  // the single PGN comment block (PGN has no notion of provenance).
+  comments?: Map<string, NodeAnnotation[]>;
+  // Clock/eval re-emitted as [%clk]/[%eval] tokens.
+  meta?: Map<string, NodeMeta>;
   // arrows: [from, to][] and highlights: square[] keyed by node id
   annotations?: Map<string, { arrows: [string, string][]; highlights: string[] }>;
   // NAG codes keyed by node id, e.g. [1] = good move (!). Emitted as `$1` after the SAN.
@@ -79,9 +104,14 @@ function renderMove(node: GameNode, extras?: PgnExtras): string {
   return `${node.move!.san}${buildNags(node.id, extras)}${buildMoveComment(node.id, extras)}`;
 }
 
-// Builds the PGN comment block for a node, e.g. { [%csl Ye4] [%cal Ye2e4] My comment }
+// Builds the PGN comment block for a node, e.g.
+// { [%clk 0:09:58] [%eval +0.24] [%csl Ye4] [%cal Ye2e4] My comment }
 function buildMoveComment(nodeId: string, extras?: PgnExtras): string {
   const parts: string[] = [];
+
+  const meta = extras?.meta?.get(nodeId);
+  if (meta?.clk != null) parts.push(`[%clk ${formatClk(meta.clk)}]`);
+  if (meta?.evalText) parts.push(`[%eval ${meta.evalText}]`);
 
   const highlights = extras?.annotations?.get(nodeId)?.highlights ?? [];
   if (highlights.length > 0) {
@@ -93,8 +123,12 @@ function buildMoveComment(nodeId: string, extras?: PgnExtras): string {
     parts.push(`[%cal ${arrows.map(([f, t]) => `Y${f}${t}`).join(',')}]`);
   }
 
-  const comment = extras?.comments?.get(nodeId);
-  if (comment) parts.push(comment);
+  // All comment sources merge into the single PGN comment text.
+  const text = (extras?.comments?.get(nodeId) ?? [])
+    .map((c) => c.text.trim())
+    .filter(Boolean)
+    .join(' ');
+  if (text) parts.push(text);
 
   return parts.length > 0 ? ` { ${parts.join(' ')} }` : '';
 }

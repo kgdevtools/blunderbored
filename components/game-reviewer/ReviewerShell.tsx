@@ -6,12 +6,30 @@ import { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback, typ
 // the server where layout APIs are unavailable.
 const useMeasureEffect = typeof window !== 'undefined' ? useLayoutEffect : useEffect;
 import { useRouter } from 'next/navigation';
-import { Chess } from 'chess.js';
+import { Chess, DEFAULT_POSITION } from 'chess.js';
 import { Chessboard } from '@zoendev/react-chessboard';
 import type { Square as CbSquare, CustomSquareProps } from '@zoendev/react-chessboard/dist/chessboard/types/index';
 import { useGameReviewer } from '@/hooks/useGameReviewer';
 import { EvalBar } from '@/components/board/EvalBar';
 import { QUALITY_META, type MoveQuality } from '@/lib/accuracy';
+import { createRootNode, addMove, toMainLinePgn, sanitizePgn, type GameNode } from '@/lib/gameTree';
+import { extractNodeData } from '@/lib/pgnImport';
+
+// Move quality → standard PGN NAG code, for baking the reviewer's verdicts into
+// the PGN handed to the board. 'good'/'book' carry no glyph.
+const QUALITY_NAG: Partial<Record<MoveQuality, number>> = {
+  inaccuracy: 6, // ?!
+  mistake: 2,    // ?
+  blunder: 4,    // ??
+};
+
+// White-perspective centipawns → a PGN [%eval] token (pawns, or #-mate).
+function formatEvalToken(cp: number): string {
+  if (cp >= 9900) return '#1';
+  if (cp <= -9900) return '#-1';
+  const v = cp / 100;
+  return (v >= 0 ? '+' : '') + v.toFixed(2);
+}
 import { GameSummary } from './GameSummary';
 import { ReviewMoveList } from './ReviewMoveList';
 import { GameReport } from '@/components/graph/GameReport';
@@ -337,10 +355,58 @@ export function ReviewerShell({ initialPgn }: ReviewerShellProps) {
   };
 
   // ── Open the analysed game on the full Board ────────────────────────────────
+  // Hands off an *enriched* PGN: the original comments/clk/arrows, plus the
+  // reviewer's per-move eval ([%eval]), quality verdict (NAG), and any comments
+  // typed here. The board re-parses it so everything shows there too.
   const handleOpenInBoard = () => {
     const pgn = reviewer.originalPgn;
     if (!pgn) return;
-    router.push(`/board?pgn=${encodeURIComponent(pgn)}`);
+    const review = reviewer.review;
+    const goRaw = () => router.push(`/board?pgn=${encodeURIComponent(pgn)}`);
+    if (!review) { goRaw(); return; }
+
+    try {
+      const clean = sanitizePgn(pgn);
+      const chess = new Chess();
+      chess.loadPgn(clean);
+      const history = chess.history({ verbose: true });
+      const root = createRootNode(history[0]?.before ?? DEFAULT_POSITION);
+      const mainNodes: GameNode[] = [];
+      let node = root;
+      for (const m of history) { node = addMove(node, m, m.after); mainNodes.push(node); }
+
+      // Start from the PGN's own annotations, then overlay the reviewer's.
+      const data = extractNodeData(chess, clean, root, mainNodes);
+      for (const rm of review.moves) {
+        const n = mainNodes[rm.moveIndex];
+        if (!n) continue;
+        data.meta.set(n.id, { ...(data.meta.get(n.id) ?? {}), evalText: formatEvalToken(rm.evalAfter) });
+        const nag = QUALITY_NAG[rm.quality];
+        if (nag) {
+          const cur = data.nags.get(n.id) ?? [];
+          if (!cur.includes(nag)) data.nags.set(n.id, [...cur, nag]);
+        }
+      }
+      reviewComments.forEach((text, moveIndex) => {
+        const n = mainNodes[moveIndex];
+        if (!n || !text.trim()) return;
+        const list = data.comments.get(n.id) ?? [];
+        data.comments.set(n.id, [...list, { source: 'reviewer', text: text.trim() }]);
+      });
+
+      const annForExport = new Map(
+        [...data.annotations].map(([id, a]) => [id, { arrows: a.arrows, highlights: a.highlights }]),
+      );
+      const enriched = toMainLinePgn(root, localHeaders, {
+        comments: data.comments,
+        meta: data.meta,
+        annotations: annForExport,
+        nags: data.nags,
+      });
+      router.push(`/board?pgn=${encodeURIComponent(enriched)}`);
+    } catch {
+      goRaw(); // any trouble: fall back to the original PGN unchanged
+    }
   };
 
   return (
@@ -352,8 +418,8 @@ export function ReviewerShell({ initialPgn }: ReviewerShellProps) {
         {/* Outer wrapper has CSS-intrinsic dimensions so getBoundingClientRect()
             always returns a real value regardless of device or SSR state. */}
         <div
-          className="flex gap-1.5 items-start shrink-0"
-          style={{ width: 'min(90vw, 90vh, 560px)', maxWidth: '100%' }}
+          className="flex gap-px lg:gap-1.5 items-start shrink-0"
+          style={{ width: 'min(100vw, 90vh, 560px)', maxWidth: '100%' }}
         >
           {boardWidth > 0 && <EvalBar score={reviewer.currentEval} height={boardWidth} />}
           <div
@@ -400,8 +466,9 @@ export function ReviewerShell({ initialPgn }: ReviewerShellProps) {
             />
           </div>
 
-          {/* Moves list — second on mobile (order-2), first on desktop (order-1) */}
-          <div className="order-2 lg:order-1 lg:flex-1 lg:overflow-y-auto lg:min-h-0">
+          {/* Moves list — second on mobile (order-2), first on desktop (order-1).
+              Capped height + own scroll on mobile so it never grows unbounded. */}
+          <div className="order-2 lg:order-1 max-h-[45vh] overflow-y-auto lg:max-h-none lg:flex-1 lg:min-h-0">
             {showReport && reviewer.review ? (
               <GameReport
                 review={reviewer.review}
