@@ -39,7 +39,7 @@ function GameInfoHeader({
   if (!hasPlayers) return null;
 
   return (
-    <div className="w-full mb-2 rounded overflow-hidden border border-zinc-700/60 hover:border-zinc-600 transition-colors">
+    <div className="w-full mb-2 rounded-sm overflow-hidden border border-zinc-700/60 hover:border-zinc-600 transition-colors">
       {/* Player row — clickable to edit game data */}
       <div
         role="button"
@@ -570,8 +570,8 @@ export function BoardShell({ initialPgn, initialFen }: BoardShellProps) {
             />
           </div>
 
-          {/* Game metadata — above the moves list */}
-          <div className="shrink-0 mx-2">
+          {/* Game metadata — above the moves list, edge-aligned with controls */}
+          <div className="shrink-0">
             <GameInfoHeader
               headers={game.headers}
               onOpen={() => setShowGameInfo(true)}
@@ -582,7 +582,7 @@ export function BoardShell({ initialPgn, initialFen }: BoardShellProps) {
 
           {/* Moves list — capped height with its own scroll so it never grows
               unbounded on mobile; fills the remaining panel height on desktop. */}
-          <div className="mx-2 max-h-[45vh] overflow-y-auto lg:max-h-none lg:flex-1 lg:min-h-0">
+          <div className="max-h-[45vh] overflow-y-auto lg:max-h-none lg:flex-1 lg:min-h-0">
             <MovesList
               tokens={game.tokens}
               current={game.current}

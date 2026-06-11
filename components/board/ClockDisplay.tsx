@@ -28,16 +28,16 @@ function ClockCell({ time, active, align }: { time?: number; active: boolean; al
   return (
     <div
       className={[
-        'flex-1 px-2.5 py-1.5 rounded-sm flex items-center bg-[#0b110c] border transition-colors',
+        'flex-1 px-2.5 py-1.5 rounded-[2px] flex items-center bg-black border transition-colors',
         align === 'right' ? 'justify-end' : 'justify-start',
-        active ? 'border-emerald-700/70 ring-1 ring-emerald-600/40' : 'border-emerald-950/80',
+        active ? 'border-zinc-500' : 'border-zinc-800',
       ].join(' ')}
     >
       <span className="relative inline-block font-dseg text-[14px] leading-none">
-        <span aria-hidden className="absolute inset-0 text-emerald-500/[0.08] select-none">{ghost}</span>
+        <span aria-hidden className="absolute inset-0 text-white/[0.07] select-none">{ghost}</span>
         <span
-          className={active ? 'relative text-emerald-300' : 'relative text-emerald-500/70'}
-          style={active ? { textShadow: '0 0 6px rgba(52,211,153,0.55)' } : undefined}
+          className={active ? 'relative text-white' : 'relative text-zinc-400'}
+          style={active ? { textShadow: '0 0 5px rgba(255,255,255,0.45)' } : undefined}
         >
           {text}
         </span>
