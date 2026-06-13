@@ -12,6 +12,7 @@ interface Feature {
 const features: Feature[] = [
   { href: '/board',             label: 'Board',               description: 'Free-form interactive chess board with engine analysis', status: 'live' },
   { href: '/analysis',          label: 'Game Reviewer',       description: 'Review a full game with engine evaluation and annotations', status: 'dev' },
+  { href: '/blunderable',       label: 'Blunderable',         description: 'Who blunders first — survive the engine without a blunder', status: 'live' },
 ];
 
 const builtFeatures = features.filter((f) => f.status !== 'planned');

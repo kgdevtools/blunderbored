@@ -40,6 +40,12 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
-# markdown — internal notes/plans stay local; keep the reader-facing README
+# markdown — planning docs, summaries and notes stay LOCAL, never committed.
+# Only project instructions and the rules file are tracked.
 *.md
-!README.md
+!AGENTS.md
+!CLAUDE.md
+!RULES.md
+
+# Claude Code local files (settings, plans, memory, transcripts)
+.claude/

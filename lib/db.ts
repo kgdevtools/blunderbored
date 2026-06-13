@@ -1,6 +1,7 @@
 import Dexie, { type EntityTable } from 'dexie';
 import type { GameReview } from './analysis';
 import type { NodeAnnotation, NodeMeta } from './gameTree';
+import type { BlunderMove } from './blunder';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -59,14 +60,39 @@ export interface ConceptNode {
 // without disturbing hand-made ones.
 export interface GraphEdge {
   id: string;
-  type: 'concept-concept' | 'concept-game' | 'game-game';
-  source: string;            // ConceptNode.id or LibraryGame.id
-  target: string;            // ConceptNode.id or LibraryGame.id
+  type: 'concept-concept' | 'concept-game' | 'game-game' | 'concept-position';
+  source: string;            // ConceptNode.id, LibraryGame.id or SavedPosition.id
+  target: string;            // ConceptNode.id, LibraryGame.id or SavedPosition.id
   sourceNodeId?: string;     // set ⇒ move-anchored ref within the source game
   origin: 'auto' | 'manual';
   label?: string;
   createdAt: number;
   updatedAt: number;
+}
+
+// ─── Saved positions (v6) ─────────────────────────────────────────────────────
+
+// A position bookmarked for practice/study in /blunderable. Self-contained (the
+// FEN + relaunch defaults), and a first-class node in the concept graph — tagged
+// to concepts via `concept-position` edges (source = concept, target = position).
+export interface SavedPosition {
+  id: string;
+  fen: string;
+  side: 'w' | 'b';          // the side you practise
+  title: string;
+  note?: string;
+  // Defaults to relaunch the challenge with (mirrors the setup config).
+  ratingElo?: number;
+  target?: number;
+  clockInitialMs?: number;
+  clockIncMs?: number;
+  source?: 'blunderable' | 'board' | 'manual';
+  createdAt: number;
+  updatedAt: number;
+  // Practice stats (lightweight; SRS scheduling layered on later).
+  lastPracticedAt?: number;
+  timesPracticed?: number;
+  lastResult?: 'succeeded' | 'failed';
 }
 
 // The board autosaves its in-progress state to a single draft row so an
@@ -98,6 +124,25 @@ function migrateNodeComments(old: unknown): Record<string, NodeAnnotation[]> {
   return out;
 }
 
+// A finished /blunderable challenge, kept for the history list. Self-contained
+// (no FKs) so it survives independently of the library.
+export interface ChallengeReport {
+  id: string;
+  side: 'w' | 'b';
+  startFen: string;
+  target: number;
+  result: 'succeeded' | 'failed';
+  e0Cp: number;            // starting eval, player POV (cp)
+  moves: BlunderMove[];
+  createdAt: number;
+  // Optional (current model) — older records simply omit these.
+  ratingElo?: number | null;     // opponent strength (null = full strength)
+  clockInitialMs?: number;       // per-side starting time
+  clockIncMs?: number;           // increment per move
+  endReason?: 'blunder' | 'drift' | 'flagged' | 'target' | 'mate';
+  cumulativeWp?: number;         // total self-inflicted win% loss
+}
+
 // ─── Database ─────────────────────────────────────────────────────────────────
 
 export class ChessAcademyDB extends Dexie {
@@ -106,6 +151,8 @@ export class ChessAcademyDB extends Dexie {
   drafts!: EntityTable<BoardDraft, 'id'>;
   conceptNodes!: EntityTable<ConceptNode, 'id'>;
   graphEdges!: EntityTable<GraphEdge, 'id'>;
+  challenges!: EntityTable<ChallengeReport, 'id'>;
+  savedPositions!: EntityTable<SavedPosition, 'id'>;
 
   constructor() {
     super('chess-academy');
@@ -134,6 +181,15 @@ export class ChessAcademyDB extends Dexie {
       await tx.table('drafts').toCollection().modify((d) => {
         d.nodeComments = migrateNodeComments(d.nodeComments);
       });
+    });
+    // v5 adds the /blunderable challenge history. Purely additive.
+    this.version(5).stores({
+      challenges: 'id, result, createdAt',
+    });
+    // v6 adds saved positions (practice bookmarks). Purely additive — existing
+    // tables and data are untouched, so older code just leaves it dormant.
+    this.version(6).stores({
+      savedPositions: 'id, source, createdAt, updatedAt, lastPracticedAt',
     });
   }
 }

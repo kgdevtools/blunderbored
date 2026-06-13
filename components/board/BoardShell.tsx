@@ -18,6 +18,7 @@ import { FenBar } from './FenBar';
 import { GameInfoModal } from './GameInfoModal';
 import { LibraryModal } from './LibraryModal';
 import { ClockDisplay } from './ClockDisplay';
+import { SavePositionDialog } from '@/components/blunderable/SavedPositions';
 import { saveGame, updateGame, serializeBoardState, checkDuplicate, saveDraft, loadDraft, clearDraft, getAdjacentGame } from '@/lib/library';
 import type { LibraryGame } from '@/lib/db';
 
@@ -232,6 +233,9 @@ export function BoardShell({ initialPgn, initialFen }: BoardShellProps) {
 
   // ── Game info modal ────────────────────────────────────────────────────────
   const [showGameInfo, setShowGameInfo] = useState(false);
+
+  // ── Save current position to practice (/blunderable) ────────────────────────
+  const [showSavePosition, setShowSavePosition] = useState(false);
 
   // ── Library ────────────────────────────────────────────────────────────────
   const [showLibrary, setShowLibrary] = useState(false);
@@ -536,8 +540,9 @@ export function BoardShell({ initialPgn, initialFen }: BoardShellProps) {
           className="w-full lg:flex-1 lg:min-w-[220px] bg-zinc-900 rounded-md flex flex-col lg:overflow-hidden"
           style={isDesktop && boardWidth > 0 ? { height: boardWidth } : undefined}
         >
-          {/* Controls — edge to edge (prev/next touch the panel edges) */}
-          <div className="shrink-0">
+          {/* Controls — edge to edge (prev/next touch the panel edges).
+              On desktop they pin to the bottom of the panel (order-4). */}
+          <div className="shrink-0 lg:order-4 lg:mt-1.5">
             <BoardControls
               onStart={game.goStart}
               onPrev={game.goPrev}
@@ -551,6 +556,7 @@ export function BoardShell({ initialPgn, initialFen }: BoardShellProps) {
               onAddGameData={() => setShowGameInfo(true)}
               onSaveToLibrary={() => openLibrary('save')}
               onOpenLibrary={() => openLibrary('browse')}
+              onSavePosition={() => setShowSavePosition(true)}
               isLoaded={!!loadedFromLibraryId}
               onPrevGame={() => loadAdjacent(-1)}
               onNextGame={() => loadAdjacent(1)}
@@ -558,8 +564,9 @@ export function BoardShell({ initialPgn, initialFen }: BoardShellProps) {
             />
           </div>
 
-          {/* Engine lines — directly below the controls, with a little breathing room */}
-          <div className="shrink-0 mt-1.5">
+          {/* Engine lines — on desktop they sit just above the controls at the
+              bottom of the panel (order-3); on mobile they follow the controls. */}
+          <div className="shrink-0 mt-1.5 lg:order-3 lg:mt-0">
             <EngineLines
               lines={engine.lines}
               depth={engine.depth}
@@ -570,8 +577,8 @@ export function BoardShell({ initialPgn, initialFen }: BoardShellProps) {
             />
           </div>
 
-          {/* Game metadata — above the moves list, edge-aligned with controls */}
-          <div className="shrink-0">
+          {/* Game metadata — desktop: top of the panel above the moves list (order-1) */}
+          <div className="shrink-0 lg:order-1">
             <GameInfoHeader
               headers={game.headers}
               onOpen={() => setShowGameInfo(true)}
@@ -582,7 +589,7 @@ export function BoardShell({ initialPgn, initialFen }: BoardShellProps) {
 
           {/* Moves list — capped height with its own scroll so it never grows
               unbounded on mobile; fills the remaining panel height on desktop. */}
-          <div className="max-h-[45vh] overflow-y-auto lg:max-h-none lg:flex-1 lg:min-h-0">
+          <div className="max-h-[45vh] overflow-y-auto lg:max-h-none lg:flex-1 lg:min-h-0 lg:order-2">
             <MovesList
               tokens={game.tokens}
               current={game.current}
@@ -614,6 +621,14 @@ export function BoardShell({ initialPgn, initialFen }: BoardShellProps) {
           headers={game.headers}
           onSetHeader={game.setHeader}
           onClose={() => setShowGameInfo(false)}
+        />
+      )}
+
+      {/* ── Save position to practice ────────────────────────────────────── */}
+      {showSavePosition && (
+        <SavePositionDialog
+          input={{ fen: game.currentFen, side: sideToMove(game.currentFen), source: 'board' }}
+          onClose={() => setShowSavePosition(false)}
         />
       )}
 

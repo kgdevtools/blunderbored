@@ -1,14 +1,17 @@
 'use client';
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { useRouter } from 'next/navigation';
 import type { LibraryGame } from '@/lib/db';
 import { useFolderPath } from '@/hooks/useLibrary';
 import { LibraryFolderTree } from './LibraryFolderTree';
 import { LibraryGameList } from './LibraryGameList';
 import { ConceptList } from './ConceptList';
 import { GraphView } from './GraphView';
+import { PerformanceCharts, type ChartKind } from './PerformanceCharts';
+import { PositionsManager } from '@/components/blunderable/PositionsManager';
 import { hasActiveFilters, type GameFilters, type GameFormat } from '@/lib/gameMeta';
 
-type Tab = 'folders' | 'concepts' | 'graph';
+type Tab = 'folders' | 'concepts' | 'graph' | 'positions';
 
 // ─── Icons ────────────────────────────────────────────────────────────────────
 
@@ -168,6 +171,8 @@ interface LibraryModalProps {
 }
 
 export function LibraryModal({ mode, onSaveHere, onLoad, onClose, currentGameId, currentFolderId }: LibraryModalProps) {
+  const router = useRouter();
+  const [graphView, setGraphView] = useState<'network' | ChartKind>('network');
   const [filters, setFilters] = useState<GameFilters>({});
   const [showFilters, setShowFilters] = useState(false);
   // Open onto the loaded game's folder so its row is visible (and highlighted).
@@ -256,7 +261,7 @@ export function LibraryModal({ mode, onSaveHere, onLoad, onClose, currentGameId,
         {/* ── Tab strip (browse only) ────────────────────────────────────── */}
         {mode === 'browse' && (
           <div className="flex items-center gap-1 px-3 py-1.5 border-b border-zinc-800 shrink-0">
-            {(['folders', 'concepts', 'graph'] as const).map((t) => (
+            {(['folders', 'concepts', 'graph', 'positions'] as const).map((t) => (
               <button
                 key={t}
                 onClick={() => setTab(t)}
@@ -354,8 +359,33 @@ export function LibraryModal({ mode, onSaveHere, onLoad, onClose, currentGameId,
         )}
 
         {activeTab === 'graph' && (
-          <div className="flex-1 min-h-0">
-            <GraphView onOpenGame={(game) => { onLoad(game); onClose(); }} />
+          <div className="flex-1 min-h-0 flex flex-col">
+            {/* Sub-tabs: the network plus performance charts */}
+            <div className="flex items-center gap-1 px-3 py-1.5 border-b border-zinc-800 shrink-0 overflow-x-auto">
+              {([['network', 'Network'], ['spider', 'Strength'], ['line', 'Trend'], ['bar', 'Ratings'], ['scatter', 'Scatter']] as const).map(([g, label]) => (
+                <button
+                  key={g}
+                  onClick={() => setGraphView(g)}
+                  className={[
+                    'px-2.5 py-1 rounded text-[11px] font-medium transition-colors whitespace-nowrap',
+                    graphView === g ? 'bg-zinc-700 text-zinc-100' : 'text-zinc-400 hover:bg-zinc-800',
+                  ].join(' ')}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            <div className="flex-1 min-h-0">
+              {graphView === 'network'
+                ? <GraphView onOpenGame={(game) => { onLoad(game); onClose(); }} />
+                : <div className="h-full overflow-y-auto"><PerformanceCharts chart={graphView} /></div>}
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'positions' && (
+          <div className="flex-1 min-h-0 overflow-y-auto p-3">
+            <PositionsManager onPractice={(p) => { onClose(); router.push(`/blunderable?pos=${p.id}`); }} />
           </div>
         )}
       </div>

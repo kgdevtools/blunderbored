@@ -29,6 +29,12 @@
   --font-dseg: 'DSEG7', ui-monospace, monospace;
 }
 
+/* Indeterminate progress sweep (e.g. /blunderable engine load). */
+@keyframes blunder-indeterminate {
+  0% { left: -35%; }
+  100% { left: 100%; }
+}
+
 @media (prefers-color-scheme: dark) {
   :root {
     --background: #0a0a0a;

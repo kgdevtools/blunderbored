@@ -15,15 +15,15 @@ type View = { kind: 'concept-level' } | { kind: 'ego'; id: string };
 
 interface ModelNode {
   id: string;
-  type: 'concept' | 'game';
+  type: 'concept' | 'game' | 'position';
   label: string;
   color: string;
-  count: number; // tagged-game count (concepts in the overview)
+  count: number; // tagged game + position count (concepts in the overview)
 }
 interface ModelEdge {
   source: string;
   target: string;
-  type: 'concept-concept' | 'concept-game' | 'game-game';
+  type: 'concept-concept' | 'concept-game' | 'game-game' | 'concept-position';
   isRef: boolean;
 }
 interface RenderModel {
@@ -38,6 +38,14 @@ interface SimNode extends ModelNode {
 }
 
 const GAME_COLOR = '#a1a1aa';
+const POSITION_COLOR = '#22d3ee'; // cyan — saved practice positions
+
+// Node radius: concepts scale with how much they anchor (game + position count);
+// games/positions are a fixed, comfortably tappable size.
+function nodeRadius(n: { type: ModelNode['type']; count: number }): number {
+  if (n.type === 'concept') return 14 + Math.min(n.count, 40) * 0.7; // 14 … 42
+  return 9;
+}
 
 // Zoom bounds. Min is generous so small screens can pull the whole graph into view.
 const MIN_K = 0.25, MAX_K = 4;
@@ -62,25 +70,29 @@ export function GraphView({ onOpenGame }: GraphViewProps) {
   // ── Build the render model for the current view ────────────────────────────
   const model = useLiveQuery<RenderModel>(async () => {
     if (view.kind === 'concept-level') {
-      const { concepts, edges, gameCounts } = await conceptLevelGraph();
+      const { concepts, edges, gameCounts, positionCounts } = await conceptLevelGraph();
       return {
         nodes: concepts.map((c) => ({
-          id: c.id, type: 'concept', label: c.name, color: colorForFamily(c.family), count: gameCounts[c.id] ?? 0,
+          id: c.id, type: 'concept', label: c.name, color: colorForFamily(c.family),
+          count: (gameCounts[c.id] ?? 0) + (positionCounts[c.id] ?? 0),
         })),
         edges: edges.map((e) => ({ source: e.source, target: e.target, type: e.type, isRef: false })),
       };
     }
-    // ego view: resolve each neighbour id against both tables
+    // ego view: resolve each neighbour id against all node tables
     const { nodeIds, edges } = await egoNetwork(view.id, 1);
-    const [concepts, games] = await Promise.all([
+    const [concepts, games, positions] = await Promise.all([
       db.conceptNodes.bulkGet(nodeIds),
       db.games.bulkGet(nodeIds),
+      db.savedPositions.bulkGet(nodeIds),
     ]);
     const nodes: ModelNode[] = nodeIds.map((id, i) => {
       const c = concepts[i];
       if (c) return { id, type: 'concept', label: c.name, color: colorForFamily(c.family), count: 0 };
       const g = games[i];
       if (g) return { id, type: 'game', label: g.title, color: GAME_COLOR, count: 0 };
+      const p = positions[i];
+      if (p) return { id, type: 'position', label: p.title, color: POSITION_COLOR, count: 0 };
       return { id, type: 'game', label: '(deleted)', color: '#52525b', count: 0 };
     });
     const focus = nodes.find((n) => n.id === view.id);
@@ -97,6 +109,13 @@ export function GraphView({ onOpenGame }: GraphViewProps) {
   const transformRef = useRef({ x: 0, y: 0, k: 1 });
   const onOpenRef = useRef(onOpenGame);
   onOpenRef.current = onOpenGame;
+
+  // Mirror view/focus into a ref so the long-lived draw loop can highlight the
+  // focused node and decide when to label games/positions (ego view only).
+  const renderInfoRef = useRef<{ ego: boolean; focusId: string | null }>({ ego: false, focusId: null });
+  useEffect(() => {
+    renderInfoRef.current = { ego: view.kind === 'ego', focusId: view.kind === 'ego' ? view.id : null };
+  }, [view]);
 
   // Reconcile sim nodes whenever the model changes (keep positions of surviving ids).
   useEffect(() => {
@@ -132,8 +151,6 @@ export function GraphView({ onOpenGame }: GraphViewProps) {
     const ro = new ResizeObserver(resize);
     ro.observe(canvas);
 
-    const radius = (n: SimNode) => (n.type === 'concept' ? 8 + Math.min(n.count, 40) * 0.5 : 5);
-
     const step = () => {
       const nodes = simRef.current;
       const edges = edgesRef.current;
@@ -148,7 +165,7 @@ export function GraphView({ onOpenGame }: GraphViewProps) {
           let dx = a.x - b.x, dy = a.y - b.y;
           let d2 = dx * dx + dy * dy;
           if (d2 < 1) { d2 = 1; dx = Math.random(); dy = Math.random(); }
-          const f = 4000 / d2;
+          const f = 6500 / d2;
           const d = Math.sqrt(d2);
           const fx = (dx / d) * f, fy = (dy / d) * f;
           a.vx += fx; a.vy += fy; b.vx -= fx; b.vy -= fy;
@@ -160,7 +177,7 @@ export function GraphView({ onOpenGame }: GraphViewProps) {
         if (!a || !b) continue;
         const dx = b.x - a.x, dy = b.y - a.y;
         const d = Math.sqrt(dx * dx + dy * dy) || 1;
-        const f = (d - 90) * 0.02;
+        const f = (d - 115) * 0.02;
         const fx = (dx / d) * f, fy = (dy / d) * f;
         a.vx += fx; a.vy += fy; b.vx -= fx; b.vy -= fy;
       }
@@ -194,17 +211,35 @@ export function GraphView({ onOpenGame }: GraphViewProps) {
       }
       ctx.setLineDash([]);
 
-      // Nodes.
+      // Nodes — concept = circle, game = square, position = diamond.
+      const { ego, focusId } = renderInfoRef.current;
       for (const n of nodes) {
-        const r = radius(n);
+        const r = nodeRadius(n);
         ctx.beginPath();
-        ctx.arc(n.x, n.y, r, 0, Math.PI * 2);
+        if (n.type === 'concept') {
+          ctx.arc(n.x, n.y, r, 0, Math.PI * 2);
+        } else if (n.type === 'game') {
+          ctx.rect(n.x - r, n.y - r, r * 2, r * 2);
+        } else { // position — diamond
+          ctx.moveTo(n.x, n.y - r); ctx.lineTo(n.x + r, n.y); ctx.lineTo(n.x, n.y + r); ctx.lineTo(n.x - r, n.y); ctx.closePath();
+        }
         ctx.fillStyle = n.color;
         ctx.fill();
+        // Outline — bright + thick for the focused node, subtle otherwise.
+        if (focusId === n.id) { ctx.lineWidth = 3; ctx.strokeStyle = '#fafafa'; }
+        else { ctx.lineWidth = 1.5; ctx.strokeStyle = 'rgba(9,9,11,0.55)'; }
+        ctx.stroke();
+
+        // Labels: concepts always; games/positions only in the (smaller) ego view.
         if (n.type === 'concept') {
-          ctx.fillStyle = '#e4e4e7';
+          ctx.fillStyle = '#f4f4f5';
+          ctx.font = '600 12px sans-serif';
+          ctx.fillText(n.label, n.x + r + 4, n.y + 4);
+        } else if (ego) {
+          const label = n.label.length > 22 ? n.label.slice(0, 21) + '…' : n.label;
+          ctx.fillStyle = '#a1a1aa';
           ctx.font = '11px sans-serif';
-          ctx.fillText(n.label, n.x + r + 3, n.y + 3);
+          ctx.fillText(label, n.x + r + 4, n.y + 4);
         }
       }
 
@@ -288,7 +323,7 @@ export function GraphView({ onOpenGame }: GraphViewProps) {
       const { x, y } = toWorld(e.clientX, e.clientY);
       let hit: SimNode | null = null;
       for (const n of simRef.current) {
-        const r = (n.type === 'concept' ? 8 + Math.min(n.count, 40) * 0.5 : 5) + 4;
+        const r = nodeRadius(n) + 10; // generous padding for touch taps
         if ((n.x - x) ** 2 + (n.y - y) ** 2 <= r * r) { hit = n; break; }
       }
       if (hit) setView({ kind: 'ego', id: hit.id });
@@ -352,11 +387,18 @@ export function GraphView({ onOpenGame }: GraphViewProps) {
             )}
           </>
         ) : (
-          <span className="text-xs text-zinc-400">Library graph — click a concept to explore</span>
+          <span className="text-xs text-zinc-400">Library graph — tap a node to explore</span>
         )}
       </div>
 
       <canvas ref={canvasRef} className="w-full h-full cursor-grab active:cursor-grabbing touch-none" />
+
+      {/* Legend — node shapes by type */}
+      <div className="absolute bottom-3 left-3 z-10 flex flex-col gap-1 text-[10px] text-zinc-400 bg-zinc-900/70 backdrop-blur-sm rounded px-2 py-1.5 pointer-events-none">
+        <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-zinc-300" /> concept</span>
+        <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5" style={{ background: GAME_COLOR }} /> game</span>
+        <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rotate-45" style={{ background: POSITION_COLOR }} /> position</span>
+      </div>
 
       {/* Zoom controls — primary on touch / small screens, also work on desktop */}
       <div className="absolute bottom-3 right-3 z-10 flex flex-col gap-1.5">

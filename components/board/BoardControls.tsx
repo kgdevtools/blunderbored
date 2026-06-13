@@ -97,6 +97,7 @@ interface BoardControlsProps {
   onAddGameData: () => void;
   onSaveToLibrary: () => void;
   onOpenLibrary: () => void;
+  onSavePosition?: () => void;
   isLoaded: boolean;
   // Prev/next game within the loaded library game's folder (far-left/right).
   onPrevGame?: () => void;
@@ -120,7 +121,7 @@ export function BoardControls({
   onStart, onPrev, onNext, onEnd, onFlip,
   canPrev, canNext,
   exportPgn,
-  onNewGame, onAddGameData, onSaveToLibrary, onOpenLibrary, isLoaded,
+  onNewGame, onAddGameData, onSaveToLibrary, onOpenLibrary, onSavePosition, isLoaded,
   onPrevGame, onNextGame, gameNavEnabled,
 }: BoardControlsProps) {
   const router = useRouter();
@@ -266,6 +267,12 @@ export function BoardControls({
             <TagIcon />
             Add Game Data
           </button>
+          {onSavePosition && (
+            <button className={menuItem} onClick={runAndClose(onSavePosition)}>
+              <span className="inline-block w-[13px] text-center text-amber-400">★</span>
+              Save Position to Practice
+            </button>
+          )}
 
           {/* ── Library ──────────────────────────────────────────── */}
           <div className="my-1 border-t border-zinc-700" />

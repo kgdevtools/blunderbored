@@ -42,6 +42,16 @@ export function sanitizePgn(pgn: string): string {
     .trim();
 }
 
+// Pads a bare FEN (just the piece-placement field, or one missing trailing
+// fields) with sane defaults so chess.js's strict constructor accepts it. A
+// complete FEN passes through unchanged.
+export function normalizeFen(input: string): string {
+  const t = input.trim();
+  if (!t) return t;
+  const [placement, side = 'w', castle = '-', ep = '-', half = '0', full = '1'] = t.split(/\s+/);
+  return [placement, side, castle, ep, half, full].join(' ');
+}
+
 let _counter = 0;
 
 export function createRootNode(fen: string): GameNode {

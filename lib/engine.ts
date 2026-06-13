@@ -41,6 +41,14 @@ class EngineService {
   private multiLines = new Map<number, EngineMultiLine>();
   private currentMultiCount = 0;
 
+  // Best-move (move-by-move play) state — resolves on the `bestmove` line itself
+  // rather than from accumulated info, so it's immune to the multipv routing.
+  private currentBestResolve: ((uci: string | null) => void) | null = null;
+  private currentBestReject: ((err: Error) => void) | null = null;
+
+  // Last strength applied, so we don't re-send identical setoptions every move.
+  private appliedElo: number | null | undefined = undefined;
+
   private currentEvalFen = '';
 
   // When cancel() sends 'stop' while a search is running, the engine will
@@ -77,14 +85,18 @@ class EngineService {
     this.currentReject = null;
     this.currentMultiResolve = null;
     this.currentMultiReject = null;
+    this.currentBestResolve = null;
+    this.currentBestReject?.(err);
+    this.currentBestReject = null;
     this.latestInfo = null;
     this.multiLines.clear();
     this.currentMultiCount = 0;
     this.skipNextBestmove = false;
+    this.appliedElo = undefined;
   }
 
   private get isBusy(): boolean {
-    return this.currentResolve !== null || this.currentMultiResolve !== null;
+    return this.currentResolve !== null || this.currentMultiResolve !== null || this.currentBestResolve !== null;
   }
 
   async initialize(): Promise<void> {
@@ -154,6 +166,16 @@ class EngineService {
       // next evaluation's promise prematurely.
       if (this.skipNextBestmove) {
         this.skipNextBestmove = false;
+        return;
+      }
+
+      // Move-by-move play: the move is on the bestmove line itself.
+      if (this.currentBestResolve) {
+        const token = line.split(' ')[1];
+        const resolve = this.currentBestResolve;
+        this.currentBestResolve = null;
+        this.currentBestReject = null;
+        resolve(token && token !== '(none)' ? token : null);
         return;
       }
 
@@ -255,9 +277,65 @@ class EngineService {
     this.currentReject = null;
     this.currentMultiResolve = null;
     this.currentMultiReject = null;
+    this.currentBestResolve = null;
+    this.currentBestReject = null;
     this.latestInfo = null;
     this.multiLines.clear();
     this.currentMultiCount = 0;
+  }
+
+  // Set the engine's playing strength for subsequent *play* (bestMove) calls.
+  // `elo` = null → full strength (used for scoring/eval so blunder detection stays
+  // accurate). A number → UCI_LimitStrength at that Elo (engine floor ≈ 1320).
+  // Idempotent: skips re-sending if the strength is unchanged.
+  setStrength(elo: number | null): void {
+    if (this.appliedElo === elo) return;
+    this.appliedElo = elo;
+    if (elo === null) {
+      this.send('setoption name UCI_LimitStrength value false');
+    } else {
+      this.send('setoption name UCI_LimitStrength value true');
+      this.send(`setoption name UCI_Elo value ${Math.max(1320, Math.min(3190, Math.round(elo)))}`);
+    }
+  }
+
+  // Play a single move with a fixed time budget (`go movetime`). Resolves with the
+  // chosen move in UCI (e.g. "e2e4"), or null if there's no legal move. Honours the
+  // strength set via setStrength(). Immune to the multipv routing bug because it
+  // reads the move straight off the bestmove line.
+  async bestMove(fen: string, movetimeMs = 800): Promise<string | null> {
+    if (!this.worker || !this.isReady) await this.initialize();
+    await this.waitIfBusy();
+
+    this.currentEvalFen = fen;
+    return new Promise<string | null>((resolve, reject) => {
+      let settled = false;
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        this.send('stop');
+        this.skipNextBestmove = true;
+        this.currentBestResolve = null;
+        this.currentBestReject = null;
+        reject(new Error('Engine move timed out'));
+      }, movetimeMs + SEARCH_TIMEOUT_MS);
+
+      this.currentBestResolve = (uci) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(uci);
+      };
+      this.currentBestReject = (err) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        reject(err);
+      };
+      this.send('setoption name MultiPV value 1');
+      this.send(`position fen ${fen}`);
+      this.send(`go movetime ${movetimeMs}`);
+    });
   }
 
   async evaluateMulti(fen: string, depth = 18, pvCount = 3): Promise<EngineMultiLine[]> {
@@ -300,6 +378,52 @@ class EngineService {
       this.send(`setoption name MultiPV value ${pvCount}`);
       this.send(`position fen ${fen}`);
       this.send(`go depth ${depth}`);
+    });
+  }
+
+  // Node-limited multi-PV search for *play*. Returns the top `pvCount` lines
+  // (scores in side-to-move POV) so the caller can sample a move. We weaken the
+  // engine purely by capping nodes (full-strength move choice, just less search)
+  // rather than UCI_LimitStrength, whose random move-sampling plays erratically.
+  // Not cached: the budget is the strength knob and callers may re-search.
+  async searchNodes(fen: string, nodes: number, pvCount = 3): Promise<EngineMultiLine[]> {
+    if (!this.worker || !this.isReady) await this.initialize();
+    // Ensure the strength limiter is off — play strength comes from the node cap.
+    this.setStrength(null);
+    await this.waitIfBusy();
+
+    this.currentEvalFen = fen;
+    this.currentMultiCount = pvCount;
+    return new Promise<EngineMultiLine[]>((resolve, reject) => {
+      let settled = false;
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        this.send('stop');
+        this.skipNextBestmove = true;
+        this.currentMultiResolve = null;
+        this.currentMultiReject = null;
+        this.multiLines.clear();
+        this.currentMultiCount = 0;
+        reject(new Error('Engine node search timed out'));
+      }, SEARCH_TIMEOUT_MS);
+
+      this.currentMultiResolve = (lines) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(lines);
+      };
+      this.currentMultiReject = (err) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        reject(err);
+      };
+      this.multiLines.clear();
+      this.send(`setoption name MultiPV value ${pvCount}`);
+      this.send(`position fen ${fen}`);
+      this.send(`go nodes ${Math.max(1, Math.round(nodes))}`);
     });
   }
 }

@@ -4,6 +4,7 @@ import type { GameNode, MoveListToken, NodeAnnotation, NodeMeta, AnnoSource } fr
 import { formatSeconds } from '@/lib/clock';
 import { scrollActiveIntoView } from '@/lib/scroll';
 import { RefLinker } from './RefLinker';
+import { SavePositionDialog } from '@/components/blunderable/SavedPositions';
 
 // Comment text colour by provenance, so imported / manual / reviewer notes are
 // visually distinct where they sit side by side on a move.
@@ -66,6 +67,7 @@ export function MovesList({ tokens, current, onSelect, onDeleteMove, onDeleteAft
   const [ctxMenu, setCtxMenu] = useState<CtxMenu | null>(null);
   const [editingNodeId, setEditingNodeId] = useState<string | null>(null);
   const [refNode, setRefNode] = useState<GameNode | null>(null);
+  const [savePosNode, setSavePosNode] = useState<GameNode | null>(null);
   const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Toggle a NAG: picking the one already set clears it.
@@ -273,6 +275,12 @@ export function MovesList({ tokens, current, onSelect, onDeleteMove, onDeleteAft
           >
             Link to game / concept…
           </button>
+          <button
+            className="block w-full text-left px-3 py-1.5 hover:bg-zinc-700 text-zinc-200"
+            onClick={() => { setSavePosNode(ctxMenu.node); setCtxMenu(null); }}
+          >
+            Save Position to Practice
+          </button>
           <div className="my-1 border-t border-zinc-700" />
           <button
             className="block w-full text-left px-3 py-1.5 hover:bg-zinc-700 text-red-400"
@@ -297,6 +305,13 @@ export function MovesList({ tokens, current, onSelect, onDeleteMove, onDeleteAft
           sourceNodeId={refNode.id}
           moveLabel={moveLabel(refNode)}
           onClose={() => setRefNode(null)}
+        />
+      )}
+
+      {savePosNode && (
+        <SavePositionDialog
+          input={{ fen: savePosNode.fen, side: savePosNode.fen.split(' ')[1] === 'b' ? 'b' : 'w', source: 'board' }}
+          onClose={() => setSavePosNode(null)}
         />
       )}
     </>

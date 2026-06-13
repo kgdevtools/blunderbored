@@ -13,7 +13,7 @@
  *
  * Bump VERSION to invalidate all caches; old caches are purged on activate.
  */
-const VERSION = 'v3';
+const VERSION = 'v5';
 const STATIC_CACHE = `ca-static-${VERSION}`;
 const RUNTIME_CACHE = `ca-runtime-${VERSION}`;
 const OFFLINE_URL = '/offline';
@@ -21,7 +21,7 @@ const NAV_TIMEOUT_MS = 3000;
 
 // Documents to precache so they render offline without a prior full-page load.
 // Their JS/CSS chunks are cached on first online visit (cache-first below).
-const PRECACHE_URLS = ['/', '/offline', '/board'];
+const PRECACHE_URLS = ['/', '/offline', '/board', '/blunderable'];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
