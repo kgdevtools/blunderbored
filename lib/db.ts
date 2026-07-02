@@ -34,6 +34,11 @@ export interface LibraryGame {
   nodeMeta?: Record<string, NodeMeta>;         // nodeId → clk/eval parsed from PGN. Optional: pre-v4 rows lack it.
   annotations: Record<string, StoredAnnotation>; // nodeId → arrows/highlights
   nags?: Record<string, number[]>;             // nodeId → NAG codes (e.g. [1] = !). Optional: pre-v3 rows lack it.
+  // Duplicate-detection fingerprint of the movetext, cached at import time so
+  // later imports don't recompute it for every existing row. Optional: older
+  // rows lack it and fall back to computing from the PGN. Not indexed, so no
+  // schema version bump is needed (Dexie migrations must stay additive).
+  fingerprint?: string;
   reviewData: GameReview | null;
   createdAt: number;
   updatedAt: number;
@@ -139,8 +144,9 @@ export interface ChallengeReport {
   ratingElo?: number | null;     // opponent strength (null = full strength)
   clockInitialMs?: number;       // per-side starting time
   clockIncMs?: number;           // increment per move
-  endReason?: 'blunder' | 'drift' | 'flagged' | 'target' | 'mate';
+  endReason?: 'blunder' | 'drift' | 'regression' | 'flagged' | 'target' | 'mate';
   cumulativeWp?: number;         // total self-inflicted win% loss
+  toEnd?: boolean;               // run was "play to the end" (target ignored)
 }
 
 // ─── Database ─────────────────────────────────────────────────────────────────

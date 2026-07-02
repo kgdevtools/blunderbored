@@ -10,71 +10,49 @@ import { BoardEditor } from './BoardEditor';
 import { GameMovesList, type Ply } from './GameMovesList';
 import { SavePositionDialog, SavedPositionsList, type SavePositionInput } from './SavedPositions';
 import { recordPractice } from '@/lib/positions';
+import { saveGame, deriveTitle, type SaveGamePayload } from '@/lib/library';
+import { LibraryModal } from '@/components/board/LibraryModal';
 import { db, type SavedPosition } from '@/lib/db';
 import { moveAccuracy } from '@/lib/accuracy';
 import {
   toWhiteCp, evalForSide, classifySelfLoss, winPForPlayer, detectThreats, THREAT_COLORS,
   moveNotation, CLASS_META, CUMULATIVE_FAIL_WP, classifyMoveTime, TIME_META,
+  regressionFail, isMissedWin,
   type MoveClass, type BlunderMove,
 } from '@/lib/blunder';
+import {
+  RATING_MIN, RATING_MAX, ratingToNodes, ratingToTempCp, ratingToWindowCp,
+  playMultiPv, ratingToMinThinkMs, sampleMove,
+} from '@/lib/strengthModel';
 
-const ENGINE_DEPTH = 12;            // scoring search depth (full strength)
-const EVAL_TIMEOUT_MS = 12_000;     // client cap so a slow scoring search can't hang the UI
+// Scoring search budget (full strength). Node-based rather than depth-based so
+// verdicts are deterministic and device-independent (~depth 15–17 at the lite
+// build's ~400knps).
+const SCORING_NODES = 600_000;
 
 type Status = 'init' | 'ready' | 'player' | 'thinking' | 'failed' | 'succeeded' | 'error';
-type EndReason = 'blunder' | 'drift' | 'flagged' | 'target' | 'mate';
+type EndReason = 'blunder' | 'drift' | 'regression' | 'flagged' | 'target' | 'mate';
 type Side = 'w' | 'b';
 type Phase = 'setup' | 'playing';
 
 interface Config {
   side: Side; fen: string; target: number;
+  toEnd?: boolean; // survive until the game resolves, ignoring `target`
   ratingElo: number; clockInitialMs: number; clockIncMs: number;
   savedPositionId?: string; // set when launched from a saved position (for practice stats)
 }
 
 const useMeasureEffect = typeof window !== 'undefined' ? useLayoutEffect : useEffect;
 
-const TARGET_MIN = 3, TARGET_MAX = 10;
-const RATING_MIN = 1350, RATING_MAX = 2600;
+const TARGET_MIN = 3, TARGET_MAX = 20;
 const CLOCK_PRESETS_MIN = [3, 5, 10];
+const CLOCK_CUSTOM_MIN = 1, CLOCK_CUSTOM_MAX = 60;
 const INC_PRESETS_S = [0, 2, 5];
 
-// ── Play strength model ───────────────────────────────────────────────────────
-// The engine-lab harness showed UCI_LimitStrength plays *erratically* (it hits a
-// rating by randomly sampling weak moves), so we weaken on our terms instead:
-//   • node cap  → full-strength choice, just less search (consistent ceiling)
-//   • top-K softmax sampling → plausible, bounded inaccuracies that scale with
-//     rating (never a random blunder in a quiet position)
-// See engine-lab/README.md for the data behind these curves.
-const PLAY_MULTIPV = 4;
+// Play strength model (node cap + windowed softmax sampling) lives in
+// lib/strengthModel.ts, mirrored by engine-lab/run-model.mjs for validation.
 
-const clamp01 = (x: number) => Math.max(0, Math.min(1, x));
-
-// Node budget: ~50k at 1350 up to ~1M at 2600 (geometric). Caps how deep it sees.
-function ratingToNodes(elo: number): number {
-  const t = clamp01((elo - RATING_MIN) / (RATING_MAX - RATING_MIN));
-  return Math.round(50_000 * Math.pow(20, t));
-}
-
-// Sampling temperature (centipawns): high at low ratings (flatter → more likely
-// to pick a worse top-4 move), → near-zero at the top (always best).
-function ratingToTempCp(elo: number): number {
-  const t = clamp01((elo - RATING_MIN) / (RATING_MAX - RATING_MIN));
-  return Math.round(140 - t * 134); // 140 … 6
-}
-
-// Softmax-sample a move from the top lines by their (side-to-move POV) score.
-// tempCp≈0 ⇒ always the best line; larger ⇒ flatter distribution.
-function sampleMove(lines: { score: number; pv: string[] }[], tempCp: number): string | null {
-  if (lines.length === 0) return null;
-  if (tempCp <= 1) return lines[0].pv[0] ?? null;
-  const best = lines[0].score;
-  const weights = lines.map((l) => Math.exp((l.score - best) / tempCp));
-  const total = weights.reduce((a, b) => a + b, 0);
-  let r = Math.random() * total;
-  for (let i = 0; i < lines.length; i++) { r -= weights[i]; if (r <= 0) return lines[i].pv[0] ?? null; }
-  return lines[0].pv[0] ?? null;
-}
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 // A realistic middlegame default — you'll usually practise from positions already
 // underway (Giuoco Pianissimo, both sides developed and castled).
@@ -85,6 +63,15 @@ function ratingLabel(elo: number): string {
   if (elo < 1900) return 'Club';
   if (elo < 2200) return 'Strong';
   return 'Expert';
+}
+
+// Expected playing style at this rating (matches the validated strength model —
+// bounded inaccuracies that scale down as the rating rises).
+function ratingStyle(elo: number): string {
+  if (elo < 1500) return 'frequent inaccuracies, the odd real mistake';
+  if (elo < 1900) return 'occasional inaccuracies, rarely blunders';
+  if (elo < 2200) return 'precise — punishes loose moves';
+  return 'near-perfect — only the smallest slips';
 }
 
 function fmtClock(ms: number): string {
@@ -103,14 +90,21 @@ function looksLikeFen(text: string): boolean {
   return first.split('/').length === 8;
 }
 
+type SourceTab = 'position' | 'pgn' | 'library';
+
 function SetupScreen({ onStart, initialPositionId }: { onStart: (cfg: Config) => void; initialPositionId?: string }) {
   const [side, setSide] = useState<Side>('w');
   const [orientation, setOrientation] = useState<'white' | 'black'>('white');
   const [fen, setFen] = useState(DEFAULT_FEN);
-  const [raw, setRaw] = useState(DEFAULT_FEN);   // the combined FEN/PGN input box
+  const [raw, setRaw] = useState(DEFAULT_FEN);   // the FEN/PGN input box
+  const [sourceTab, setSourceTab] = useState<SourceTab>('position');
+  const [showLibPick, setShowLibPick] = useState(false);
+  const [libGameTitle, setLibGameTitle] = useState<string | null>(null);
   const [target, setTarget] = useState(5);
+  const [toEnd, setToEnd] = useState(false);
   const [ratingElo, setRatingElo] = useState(1600);
   const [clockMin, setClockMin] = useState(5);
+  const [clockCustom, setClockCustom] = useState(false);
   const [incS, setIncS] = useState(2);
   const [inputErr, setInputErr] = useState<string | null>(null);
   const [fenHist, setFenHist] = useState<string[]>([]);
@@ -179,10 +173,14 @@ function SetupScreen({ onStart, initialPositionId }: { onStart: (cfg: Config) =>
     }
   };
 
+  // Scrubbing to a ply auto-selects the side to move there ("start here" framing):
+  // you play whoever's turn it is. Still overridable via the Play-as toggle.
   const gotoPly = (i: number) => {
     const clamped = Math.max(0, Math.min(fenHist.length - 1, i));
     setPly(clamped);
-    setFen(fenHist[clamped]); setError(null);
+    const f = fenHist[clamped];
+    setFen(f); setError(null);
+    pickSide(f.split(' ')[1] === 'b' ? 'b' : 'w');
   };
 
   const plyNav = fenHist.length > 1 ? {
@@ -198,7 +196,7 @@ function SetupScreen({ onStart, initialPositionId }: { onStart: (cfg: Config) =>
       return;
     }
     const savedPositionId = loadedPosId && clean === loadedFen ? loadedPosId : undefined;
-    onStart({ side, fen: clean, target, ratingElo, clockInitialMs: clockMin * 60_000, clockIncMs: incS * 1000, savedPositionId });
+    onStart({ side, fen: clean, target, toEnd, ratingElo, clockInitialMs: clockMin * 60_000, clockIncMs: incS * 1000, savedPositionId });
   };
 
   const saveInput: SavePositionInput = {
@@ -232,22 +230,75 @@ function SetupScreen({ onStart, initialPositionId }: { onStart: (cfg: Config) =>
         {/* Left: board + position input */}
         <div className="space-y-3">
           <BoardEditor fen={fen} onFenChange={onBoardFen} orientation={orientation} onFlip={() => setOrientation((o) => (o === 'white' ? 'black' : 'white'))} ply={plyNav} maxBoard={460} />
+
+          {/* Source tabs: where the starting position comes from */}
           <div>
-            <div className={labelCls}>Position — paste a FEN or a PGN</div>
-            <textarea
-              value={raw}
-              onChange={(e) => { setRaw(e.target.value); }}
-              onBlur={() => parseInput(raw)}
-              rows={3}
-              spellCheck={false}
-              placeholder={'Paste a FEN  …or…  1. e4 e5 2. Nf3 Nc6 …'}
-              className="w-full text-xs font-mono px-2 py-1.5 rounded-sm bg-zinc-900 border border-zinc-700 text-zinc-200 resize-none focus:outline-none focus:border-zinc-500"
-            />
-            <div className="flex items-center justify-between mt-1">
-              <button onClick={() => { setRaw(DEFAULT_FEN); onBoardFen(DEFAULT_FEN); }} className="text-[10px] text-zinc-500 hover:text-zinc-300">Reset to default</button>
-              {inputErr && <span className="text-[10px] text-red-400">{inputErr}</span>}
-              {!inputErr && fenHist.length > 1 && <span className="text-[10px] text-emerald-500/80">PGN loaded · scrub plies under the board</span>}
+            <div className="flex items-center gap-1 mb-1.5">
+              {(['position', 'pgn', 'library'] as const).map((t) => (
+                <button
+                  key={t}
+                  onClick={() => setSourceTab(t)}
+                  className={[
+                    'px-2.5 py-1 rounded-sm text-[11px] font-semibold capitalize transition-colors',
+                    sourceTab === t ? 'bg-zinc-700 text-zinc-100' : 'text-zinc-500 hover:bg-zinc-800 hover:text-zinc-300',
+                  ].join(' ')}
+                >
+                  {t === 'pgn' ? 'PGN' : t}
+                </button>
+              ))}
             </div>
+
+            {sourceTab === 'position' && (
+              <div>
+                <input
+                  value={raw}
+                  onChange={(e) => setRaw(e.target.value)}
+                  onBlur={() => parseInput(raw)}
+                  spellCheck={false}
+                  placeholder="Paste a FEN — or set the board up above"
+                  className="w-full text-xs font-mono px-2 py-1.5 rounded-sm bg-zinc-900 border border-zinc-700 text-zinc-200 focus:outline-none focus:border-zinc-500"
+                />
+                <div className="flex items-center justify-between mt-1">
+                  <button onClick={() => { setRaw(DEFAULT_FEN); onBoardFen(DEFAULT_FEN); }} className="text-[10px] text-zinc-500 hover:text-zinc-300">Reset to default</button>
+                  {inputErr && <span className="text-[10px] text-red-400">{inputErr}</span>}
+                </div>
+              </div>
+            )}
+
+            {sourceTab === 'pgn' && (
+              <div>
+                <textarea
+                  value={raw}
+                  onChange={(e) => setRaw(e.target.value)}
+                  onBlur={() => parseInput(raw)}
+                  rows={3}
+                  spellCheck={false}
+                  placeholder={'1. e4 e5 2. Nf3 Nc6 …  (FEN works here too)'}
+                  className="w-full text-xs font-mono px-2 py-1.5 rounded-sm bg-zinc-900 border border-zinc-700 text-zinc-200 resize-none focus:outline-none focus:border-zinc-500"
+                />
+                <div className="flex items-center justify-between mt-1">
+                  {inputErr
+                    ? <span className="text-[10px] text-red-400">{inputErr}</span>
+                    : fenHist.length > 1
+                      ? <span className="text-[10px] text-emerald-500/80">Scrub under the board to pick your start move — you’ll play {side === 'w' ? 'White' : 'Black'} from there</span>
+                      : <span className="text-[10px] text-zinc-600">Paste a game, then choose where to jump in</span>}
+                </div>
+              </div>
+            )}
+
+            {sourceTab === 'library' && (
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setShowLibPick(true)}
+                  className="px-3 py-1.5 rounded-sm bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-semibold transition-colors"
+                >
+                  Choose from library…
+                </button>
+                {libGameTitle
+                  ? <span className="text-[11px] text-emerald-500/80 truncate min-w-0">{libGameTitle} — scrub to your start move</span>
+                  : <span className="text-[10px] text-zinc-600">Pick a saved game to practise from</span>}
+              </div>
+            )}
           </div>
         </div>
 
@@ -265,9 +316,16 @@ function SetupScreen({ onStart, initialPositionId }: { onStart: (cfg: Config) =>
           <div>
             <div className="flex items-center justify-between mb-1.5">
               <span className="text-[11px] uppercase tracking-wide text-zinc-500">Survive</span>
-              <span className="text-sm font-bold tabular-nums text-zinc-200">{target} <span className="text-[10px] font-normal text-zinc-500">moves</span></span>
+              <span className="text-sm font-bold tabular-nums text-zinc-200">{toEnd ? '∞' : target} <span className="text-[10px] font-normal text-zinc-500">{toEnd ? 'to the end' : 'moves'}</span></span>
             </div>
-            <input type="range" min={TARGET_MIN} max={TARGET_MAX} step={1} value={target} onChange={(e) => setTarget(Number(e.target.value))} className="w-full accent-indigo-500" />
+            <input type="range" min={TARGET_MIN} max={TARGET_MAX} step={1} value={target} disabled={toEnd} onChange={(e) => setTarget(Number(e.target.value))} className="w-full accent-indigo-500 disabled:opacity-40" />
+            <label className="flex items-center gap-1.5 mt-1 text-[11px] text-zinc-400 cursor-pointer select-none">
+              <input type="checkbox" checked={toEnd} onChange={(e) => setToEnd(e.target.checked)} className="accent-indigo-500" />
+              Play to the end (mate, draw, or bust)
+            </label>
+            <p className="text-[10px] text-zinc-600 mt-1 leading-snug">
+              Fails on: a single blunder · steady decline over your last 4 moves · 20% total ground given up.
+            </p>
           </div>
 
           <div>
@@ -276,14 +334,34 @@ function SetupScreen({ onStart, initialPositionId }: { onStart: (cfg: Config) =>
               <span className="text-sm font-bold tabular-nums text-zinc-200">{ratingElo} <span className="text-[10px] font-normal text-zinc-500">{ratingLabel(ratingElo)}</span></span>
             </div>
             <input type="range" min={RATING_MIN} max={RATING_MAX} step={50} value={ratingElo} onChange={(e) => setRatingElo(Number(e.target.value))} className="w-full accent-indigo-500" />
+            <p className="text-[10px] text-zinc-600 mt-1">{ratingStyle(ratingElo)}</p>
           </div>
 
           <div className="flex gap-3">
             <div className="flex-1">
               <div className={labelCls}>Time</div>
-              <select value={clockMin} onChange={(e) => setClockMin(Number(e.target.value))} className={selectCls}>
+              <select
+                value={clockCustom ? 'custom' : clockMin}
+                onChange={(e) => {
+                  if (e.target.value === 'custom') { setClockCustom(true); return; }
+                  setClockCustom(false); setClockMin(Number(e.target.value));
+                }}
+                className={selectCls}
+              >
                 {CLOCK_PRESETS_MIN.map((m) => <option key={m} value={m}>{m} min</option>)}
+                <option value="custom">Custom…</option>
               </select>
+              {clockCustom && (
+                <input
+                  type="number"
+                  min={CLOCK_CUSTOM_MIN}
+                  max={CLOCK_CUSTOM_MAX}
+                  value={clockMin}
+                  onChange={(e) => setClockMin(Math.max(CLOCK_CUSTOM_MIN, Math.min(CLOCK_CUSTOM_MAX, Number(e.target.value) || CLOCK_CUSTOM_MIN)))}
+                  className={`${selectCls} mt-1.5`}
+                  aria-label="Custom minutes"
+                />
+              )}
             </div>
             <div className="flex-1">
               <div className={labelCls}>Increment</div>
@@ -304,6 +382,20 @@ function SetupScreen({ onStart, initialPositionId }: { onStart: (cfg: Config) =>
         </div>
       </div>
       {showSave && <SavePositionDialog input={saveInput} onClose={() => setShowSave(false)} />}
+      {showLibPick && (
+        <LibraryModal
+          mode="browse"
+          onSaveHere={() => {}}
+          onLoad={(game) => {
+            setShowLibPick(false);
+            setSourceTab('library');
+            setLibGameTitle(game.title);
+            setRaw(game.pgn);
+            parseInput(game.pgn);
+          }}
+          onClose={() => setShowLibPick(false)}
+        />
+      )}
     </div>
   );
 }
@@ -324,7 +416,7 @@ function RecentChallenges() {
               {c.ratingElo != null && <span className="text-zinc-600 tabular-nums">{c.ratingElo}</span>}
               <span className="text-zinc-500 tabular-nums">{survived}/{c.target}</span>
               <span className={`ml-auto font-semibold ${c.result === 'succeeded' ? 'text-emerald-400' : 'text-red-400'}`}>
-                {c.result === 'succeeded' ? 'Survived' : 'Blundered'}
+                {c.result === 'succeeded' ? 'Survived' : 'Failed'}
               </span>
             </div>
           );
@@ -336,8 +428,8 @@ function RecentChallenges() {
 
 // ─── Playing screen ───────────────────────────────────────────────────────────
 
-function PlayingScreen({ config, onQuit }: { config: Config; onQuit: () => void }) {
-  const { side, fen, target, ratingElo, clockInitialMs, clockIncMs, savedPositionId } = config;
+function PlayingScreen({ config, onQuit, onRematch }: { config: Config; onQuit: () => void; onRematch: () => void }) {
+  const { side, fen, target, toEnd, ratingElo, clockInitialMs, clockIncMs, savedPositionId } = config;
   const chessRef = useRef(new Chess(fen));
   const [position, setPosition] = useState(fen);
   const [status, setStatus] = useState<Status>('init');
@@ -362,6 +454,7 @@ function PlayingScreen({ config, onQuit }: { config: Config; onQuit: () => void 
   const ponder = useRef<{ fen: string; result: string | null; done: boolean } | null>(null);
   const moveStart = useRef(0);
   const cumWp = useRef(0);             // authoritative cumulative self-loss (win%)
+  const selfLossHist = useRef<number[]>([]); // per-move self-losses, for the regression window
   const e0 = useRef(0);
   const playerMovesRef = useRef(0);    // authoritative survived-move count
 
@@ -421,23 +514,15 @@ function PlayingScreen({ config, onQuit }: { config: Config; onQuit: () => void 
     return () => clearInterval(id);
   }, [resolveEnd]);
 
-  // Full-strength scoring eval, wrapped in a hard timeout. Returns the player-POV
-  // cp AND the engine's best move (PV head) at that position — the latter feeds
-  // the "you should have played…" hint in the report, for free.
+  // Full-strength scoring eval. Returns the player-POV cp AND the engine's best
+  // move (PV head) at that position — the latter feeds the "you should have
+  // played…" hint in the report, for free. Timeouts/restarts live entirely in
+  // the engine service's watchdog now; no client-side race.
   const playerEval = useCallback(async (f: string): Promise<{ cp: number; bestUci: string | null }> => {
-    engineService.setStrength(null);
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const timeout = new Promise<never>((_, reject) => {
-      timer = setTimeout(() => { engineService.cancel(); reject(new Error('eval timed out')); }, EVAL_TIMEOUT_MS);
-    });
-    try {
-      const lines = await Promise.race([engineService.evaluateMulti(f, ENGINE_DEPTH, 1), timeout]);
-      const top = lines[0];
-      if (!top) throw new Error('no eval line returned');
-      return { cp: evalForSide(toWhiteCp(top.score, f), side), bestUci: top.pv[0] ?? null };
-    } finally {
-      clearTimeout(timer);
-    }
+    const lines = await engineService.searchNodes(f, SCORING_NODES, 1);
+    const top = lines[0];
+    if (!top) throw new Error('no eval line returned');
+    return { cp: evalForSide(toWhiteCp(top.score, f), side), bestUci: top.pv[0] ?? null };
   }, [side]);
 
   // Rebuild the half-move list from the live game (for the moves list / PGN).
@@ -459,19 +544,31 @@ function PlayingScreen({ config, onQuit }: { config: Config; onQuit: () => void 
   }, [syncPlies]);
 
   // Engine plays a move at the chosen rating: node-limited multi-PV search, then
-  // a rating-scaled softmax sample over the top lines. If a completed ponder
-  // matches the current position its result is reused (instant). Returns the SAN.
+  // a rating-scaled windowed softmax sample over the top lines. If a completed
+  // ponder matches the current position its result is reused. A minimum
+  // think-time keeps instant node-capped replies from feeling botlike. Returns
+  // the SAN.
   const engineMove = useCallback(async (): Promise<string | null> => {
     const chess = chessRef.current;
     if (chess.isGameOver()) return null;
+    const t0 = Date.now();
+    const pace = async () => {
+      const remaining = ratingToMinThinkMs(ratingElo) - (Date.now() - t0);
+      if (remaining > 0) await sleep(remaining);
+    };
     const pon = ponder.current;
     if (pon && pon.done && pon.fen === chess.fen()) {
       ponder.current = null;
-      if (pon.result) { log('Engine: reused pondered reply'); return applyEngineUci(pon.result); }
+      if (pon.result) {
+        log('Engine: reused pondered reply');
+        await pace();
+        return applyEngineUci(pon.result);
+      }
     }
-    const lines = await engineService.searchNodes(chess.fen(), ratingToNodes(ratingElo), PLAY_MULTIPV);
-    const uci = sampleMove(lines, ratingToTempCp(ratingElo));
+    const lines = await engineService.searchNodes(chess.fen(), ratingToNodes(ratingElo), playMultiPv(ratingElo));
+    const uci = sampleMove(lines, ratingToTempCp(ratingElo), ratingToWindowCp(ratingElo));
     if (!uci) { log('Engine: no reply'); return null; }
+    await pace();
     return applyEngineUci(uci);
   }, [ratingElo, log, applyEngineUci]);
 
@@ -492,8 +589,8 @@ function PlayingScreen({ config, onQuit }: { config: Config; onQuit: () => void 
     } catch { return; }
     const entry = { fen: predFen, result: null as string | null, done: false };
     ponder.current = entry;
-    engineService.searchNodes(predFen, ratingToNodes(ratingElo), PLAY_MULTIPV)
-      .then((lines) => { if (ponder.current === entry) { entry.result = sampleMove(lines, ratingToTempCp(ratingElo)); entry.done = true; } })
+    engineService.searchNodes(predFen, ratingToNodes(ratingElo), playMultiPv(ratingElo))
+      .then((lines) => { if (ponder.current === entry) { entry.result = sampleMove(lines, ratingToTempCp(ratingElo), ratingToWindowCp(ratingElo)); entry.done = true; } })
       .catch(() => { if (ponder.current === entry) entry.done = true; });
   }, [ratingElo]);
 
@@ -519,6 +616,9 @@ function PlayingScreen({ config, onQuit }: { config: Config; onQuit: () => void 
   const warmUp = useCallback(async () => {
     try {
       await engineService.initialize();
+      // Fresh game state per challenge — stale TT/killer heuristics from a
+      // previous (unrelated) position shouldn't colour this one.
+      await engineService.newGame();
       const start = await playerEval(fen);
       if (!mounted.current) return;
       e0.current = start.cp; beforeCp.current = start.cp; bestBefore.current = start.bestUci;
@@ -554,6 +654,9 @@ function PlayingScreen({ config, onQuit }: { config: Config; onQuit: () => void 
   }, [status, side, engineMove, playerEval, startClock, startPonder, log]);
 
   useEffect(() => {
+    // Async kickoff: every setState inside warmUp happens after an await, so
+    // this doesn't render-cascade — the rule can't see through the async gap.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     warmUp();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -561,11 +664,14 @@ function PlayingScreen({ config, onQuit }: { config: Config; onQuit: () => void 
   // ── Board orientation (flip) — defaults to the player's side at the bottom. ──
   const [orientation, setOrientation] = useState<'white' | 'black'>(side === 'w' ? 'white' : 'black');
 
-  // ── Desktop/mobile detection (panel becomes board-height column on desktop) ──
-  const [isDesktop, setIsDesktop] = useState(true);
+  // ── Desktop/mobile detection (panel becomes board-height column on desktop).
+  // Initial value read synchronously (client-only component); the effect only
+  // subscribes to changes.
+  const [isDesktop, setIsDesktop] = useState(() =>
+    typeof window !== 'undefined' ? window.matchMedia('(min-width: 1024px)').matches : true,
+  );
   useEffect(() => {
     const mq = window.matchMedia('(min-width: 1024px)');
-    setIsDesktop(mq.matches);
     const handler = (e: MediaQueryListEvent) => setIsDesktop(e.matches);
     mq.addEventListener('change', handler);
     return () => mq.removeEventListener('change', handler);
@@ -633,14 +739,22 @@ function PlayingScreen({ config, onQuit }: { config: Config; onQuit: () => void 
         // Self-loss: damage from YOUR move, measured before the engine replies.
         const afterMyCp = chess.isGameOver() ? before : (await playerEval(chess.fen())).cp;
         if (!mounted.current) return;
-        const wpLoss = Math.max(0, winPForPlayer(before) - winPForPlayer(afterMyCp));
+        const wpBefore = winPForPlayer(before);
+        const wpAfter = winPForPlayer(afterMyCp);
+        const wpLoss = Math.max(0, wpBefore - wpAfter);
         const cls = classifySelfLoss(wpLoss);
+        const cpLoss = Math.max(0, before - afterMyCp);
+        const missedWin = isMissedWin(wpBefore, wpAfter);
         cumWp.current += wpLoss; setCumulativeWp(cumWp.current);
-        recordMove(notation, mv.san, cls, wpLoss, clockMs, afterMyCp, bestSan);
-        log(`${notation}: ${CLASS_META[cls].label}, self-loss ${wpLoss.toFixed(1)}% (cum ${cumWp.current.toFixed(1)}%).`);
+        selfLossHist.current.push(wpLoss);
+        recordMove(notation, mv.san, cls, wpLoss, clockMs, afterMyCp, bestSan, cpLoss, missedWin);
+        log(`${notation}: ${CLASS_META[cls].label}, self-loss ${wpLoss.toFixed(1)}% (cum ${cumWp.current.toFixed(1)}%)${missedWin ? ' · missed win' : ''}.`);
 
         if (chess.isCheckmate()) { resolveEnd('succeeded', 'mate'); return; } // you mated the engine
         if (cls === 'blunder') { resolveEnd('failed', 'blunder'); return; }
+        // Regression before drift: the windowed decline is the more specific
+        // (and more actionable) diagnosis when both would trip.
+        if (regressionFail(selfLossHist.current)) { resolveEnd('failed', 'regression'); return; }
         if (cumWp.current >= CUMULATIVE_FAIL_WP) { resolveEnd('failed', 'drift'); return; }
         if (chess.isGameOver()) { resolveEnd('succeeded', 'target'); return; } // stalemate/draw — you held
 
@@ -657,7 +771,7 @@ function PlayingScreen({ config, onQuit }: { config: Config; onQuit: () => void 
         commitClock(); addIncrement('engine'); startClock('player');
 
         if (chess.isGameOver()) { resolveEnd('succeeded', 'target'); return; }
-        if (playerMovesRef.current >= target) { resolveEnd('succeeded', 'target'); return; }
+        if (!toEnd && playerMovesRef.current >= target) { resolveEnd('succeeded', 'target'); return; }
         moveStart.current = Date.now();
         if (mounted.current) setStatus('player');
         startPonder(); // pre-search the line we expect you to play
@@ -668,10 +782,10 @@ function PlayingScreen({ config, onQuit }: { config: Config; onQuit: () => void 
     })();
     return true;
 
-    function recordMove(notation: string, san: string, cls: MoveClass, wpLoss: number, ms: number, evalCp: number, bestSan?: string) {
+    function recordMove(notation: string, san: string, cls: MoveClass, wpLoss: number, ms: number, evalCp: number, bestSan?: string, cpLoss?: number, missedWin?: boolean) {
       if (!mounted.current) return;
       playerMovesRef.current += 1;
-      setMoves((prev) => [...prev, { notation, san, cls, wpLoss, clockMs: ms, evalCp, bestSan }]);
+      setMoves((prev) => [...prev, { notation, san, cls, wpLoss, clockMs: ms, evalCp, bestSan, cpLoss, missedWin: missedWin || undefined }]);
       setPlayerMoves(playerMovesRef.current);
     }
 
@@ -680,7 +794,7 @@ function PlayingScreen({ config, onQuit }: { config: Config; onQuit: () => void 
       if (!mounted.current) return;
       setMoves((prev) => prev.length === 0 ? prev : [...prev.slice(0, -1), { ...prev[prev.length - 1], ...patch }]);
     }
-  }, [status, side, playerEval, engineMove, uciToSan, syncPlies, target, resolveEnd, commitClock, addIncrement, startClock, startPonder, cancelPonder, log]);
+  }, [status, side, playerEval, engineMove, uciToSan, syncPlies, target, toEnd, resolveEnd, commitClock, addIncrement, startClock, startPonder, cancelPonder, log]);
 
   const onSquareClick = useCallback((square: CbSquare) => {
     if (status !== 'player' || endedRef.current) return;
@@ -702,6 +816,31 @@ function PlayingScreen({ config, onQuit }: { config: Config; onQuit: () => void 
   }, [status]);
 
   const ended = status === 'failed' || status === 'succeeded';
+  const running = status === 'player' || status === 'thinking';
+
+  // Keep the screen awake while the clock runs (PWA on a phone would otherwise
+  // sleep mid-game). Best-effort: unsupported browsers just skip it.
+  useEffect(() => {
+    if (!running) return;
+    let sentinel: { release: () => Promise<void> } | null = null;
+    let stopped = false;
+    const request = async () => {
+      try {
+        const wl = (navigator as Navigator & { wakeLock?: { request: (t: 'screen') => Promise<{ release: () => Promise<void> }> } }).wakeLock;
+        const s = await wl?.request('screen');
+        if (stopped) { s?.release().catch(() => {}); } else if (s) { sentinel = s; }
+      } catch { /* denied/unsupported — fine */ }
+    };
+    request();
+    // The lock auto-releases when the tab hides; re-acquire on return.
+    const onVis = () => { if (document.visibilityState === 'visible') request(); };
+    document.addEventListener('visibilitychange', onVis);
+    return () => {
+      stopped = true;
+      document.removeEventListener('visibilitychange', onVis);
+      sentinel?.release().catch(() => {});
+    };
+  }, [running]);
 
   // Persist once.
   const saved = useRef(false);
@@ -709,13 +848,13 @@ function PlayingScreen({ config, onQuit }: { config: Config; onQuit: () => void 
     if (ended && !saved.current) {
       saved.current = true;
       saveChallenge({
-        side, startFen: fen, target, result: status as 'succeeded' | 'failed',
+        side, startFen: fen, target, toEnd, result: status as 'succeeded' | 'failed',
         e0Cp: e0.current, moves, ratingElo, clockInitialMs, clockIncMs,
         endReason: endReason ?? undefined, cumulativeWp: cumWp.current,
       }).catch(() => {});
       if (savedPositionId) recordPractice(savedPositionId, status as 'succeeded' | 'failed').catch(() => {});
     }
-  }, [ended, status, side, fen, target, moves, ratingElo, clockInitialMs, clockIncMs, endReason]);
+  }, [ended, status, side, fen, target, toEnd, moves, ratingElo, clockInitialMs, clockIncMs, endReason, savedPositionId]);
 
   // On fail, freeze the board and surface threats as arrows.
   const threatArrows = useMemo(
@@ -770,12 +909,23 @@ function PlayingScreen({ config, onQuit }: { config: Config; onQuit: () => void 
           className="w-full lg:flex-1 lg:min-w-[240px] bg-zinc-900 rounded-md flex flex-col lg:overflow-hidden"
           style={isDesktop && boardWidth > 0 ? { height: boardWidth } : undefined}
         >
-          {/* Clock + status (top) */}
+          {/* Clocks + status (top): opponent strip above your clock, /board-compact */}
           <div className="shrink-0 px-3 pt-2 lg:order-1">
-            <div className="flex items-center justify-center gap-3">
-              <PlayerClock ms={clockView.player} dimmed={dimClock} />
-              {status === 'thinking' && <span className="text-xs text-zinc-500">engine…</span>}
+            <div className="flex items-center justify-between px-1">
+              <span className="text-[11px] text-zinc-500 flex items-center gap-1.5">
+                {status === 'thinking' && <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-pulse" />}
+                Stockfish {ratingElo}
+              </span>
+              <span className={`font-mono text-sm tabular-nums ${clockView.active === 'engine' ? 'text-zinc-200' : 'text-zinc-600'}`}>
+                {fmtClock(clockView.engine)}
+              </span>
             </div>
+            <PlayerClock ms={clockView.player} dimmed={dimClock} />
+            {running && (
+              <div className="text-center text-[11px] text-zinc-500 tabular-nums pb-1">
+                survived <span className="text-zinc-300 font-semibold">{playerMoves}</span>{toEnd ? ' · to the end' : `/${target}`}
+              </div>
+            )}
 
             {status === 'error' && (
               <div className="rounded-sm px-3 py-2 bg-amber-900/30 border border-amber-800 text-xs mt-1">
@@ -821,9 +971,9 @@ function PlayingScreen({ config, onQuit }: { config: Config; onQuit: () => void 
       {ended && !summaryDismissed && (
         <SummaryModal
           status={status} moves={moves} plies={plies} side={side} endReason={endReason}
-          e0Cp={e0Cp} cumulativeWp={cumulativeWp} ratingElo={ratingElo} target={target} survived={playerMoves}
+          e0Cp={e0Cp} cumulativeWp={cumulativeWp} ratingElo={ratingElo} target={target} toEnd={toEnd} survived={playerMoves}
           clockInitialMs={clockInitialMs} clockIncMs={clockIncMs} startFen={fen} getPgn={getPgn}
-          onClose={() => setSummaryDismissed(true)} onNewChallenge={onQuit}
+          onClose={() => setSummaryDismissed(true)} onNewChallenge={onQuit} onRematch={onRematch}
         />
       )}
     </div>
@@ -888,10 +1038,24 @@ function MoveTimesChart({ moves, clockInitialMs }: { moves: BlunderMove[]; clock
 const REASON_TEXT: Record<EndReason, string> = {
   blunder: 'A blunder ended the run — check the board for the threats.',
   drift: 'Too much ground given up over the run — death by a thousand cuts.',
+  regression: 'The position got steadily worse over your last few moves.',
   flagged: 'The clock ran out.',
   target: 'You held the position to the target.',
   mate: 'Checkmate.',
 };
+
+// Quality line: avg self-inflicted centipawn loss → a rough playing-level band,
+// from the engine-lab cpl↔rating calibration (README table). Only shown with a
+// decent sample (≥8 moves) — anything less is statistically meaningless, which
+// is why the old "Your (est.) Elo" tile (shown from move 1) had to go.
+const QUALITY_MIN_MOVES = 8;
+function qualityBand(avgCpl: number): string {
+  if (avgCpl <= 12) return '~2600+';
+  if (avgCpl <= 20) return '~2200–2600';
+  if (avgCpl <= 30) return '~1800–2200';
+  if (avgCpl <= 45) return '~1400–1800';
+  return 'below 1400';
+}
 
 // Footing-aware verdict. Branches on where you STARTED (winning / level / worse)
 // before describing the swing — so a game you were losing from move one never
@@ -933,13 +1097,16 @@ function CloseX({ onClick }: { onClick: () => void }) {
   );
 }
 
-function SummaryModal({ status, moves, plies, side, endReason, e0Cp, cumulativeWp, ratingElo, target, survived, clockInitialMs, clockIncMs, startFen, getPgn, onClose, onNewChallenge }: {
+function SummaryModal({ status, moves, plies, side, endReason, e0Cp, cumulativeWp, ratingElo, target, toEnd, survived, clockInitialMs, clockIncMs, startFen, getPgn, onClose, onNewChallenge, onRematch }: {
   status: Status; moves: BlunderMove[]; plies: Ply[]; side: Side; endReason: EndReason | null;
-  e0Cp: number; cumulativeWp: number; ratingElo: number; target: number; survived: number; clockInitialMs: number;
+  e0Cp: number; cumulativeWp: number; ratingElo: number; target: number; toEnd?: boolean; survived: number; clockInitialMs: number;
   clockIncMs: number; startFen: string; getPgn: () => string; onClose: () => void; onNewChallenge: () => void;
+  onRematch: () => void;
 }) {
   const succeeded = status === 'succeeded';
   const [showSave, setShowSave] = useState(false);
+  const [showLibSave, setShowLibSave] = useState(false);
+  const [savedMsg, setSavedMsg] = useState<string | null>(null);
   const counts = { blunder: 0, mistake: 0, inaccuracy: 0, ok: 0 } as Record<MoveClass, number>;
   for (const m of moves) counts[m.cls]++;
   const accs = moves.map((m) => moveAccuracy(m.wpLoss ?? 0, 0));
@@ -948,16 +1115,26 @@ function SummaryModal({ status, moves, plies, side, endReason, e0Cp, cumulativeW
   const totalTimeS = moves.reduce((s, m) => s + m.clockMs, 0) / 1000;
   const fmtEval = (cp: number) => `${cp >= 0 ? '+' : ''}${(cp / 100).toFixed(2)}`;
   const accColor = accuracy >= 90 ? '#34d399' : accuracy >= 75 ? '#facc15' : '#f87171';
-  // Net win% swing start→end (signed: + you improved, − you made it worse).
+  // Net win% swing start→end (signed: + you improved, − you made it worse) …
   const swingWp = winPForPlayer(endEvalCp) - winPForPlayer(e0Cp);
   const swingTxt = Math.abs(swingWp) < 0.5 ? '±0%' : `${swingWp > 0 ? '+' : '−'}${Math.abs(swingWp).toFixed(0)}%`;
+  // … decomposed into what YOUR moves cost vs what the engine's replies did:
+  // swing = engineDelta − yourCost, so engineDelta = swing + yourCost. Positive
+  // = its (sampled, rating-limited) replies handed ground back to you.
+  const engineDeltaWp = swingWp + cumulativeWp;
   const verdict = footingVerdict(e0Cp, endEvalCp);
-  // Rough performance estimate from average self-inflicted win% loss (a guide, not exact).
-  const avgLoss = moves.length ? cumulativeWp / moves.length : 0;
-  const estRating = Math.round(Math.max(700, Math.min(2900, 2800 - avgLoss * 70)) / 10) * 10;
-  // Your weakest move — what to look at first.
+  // Quality line (replaces the removed "Your (est.)" Elo tile): only with a
+  // meaningful sample, and phrased as a band with an explicit ≈.
+  const cpLosses = moves.map((m) => m.cpLoss).filter((v): v is number => v != null);
+  const avgCpl = cpLosses.length ? cpLosses.reduce((s, v) => s + v, 0) / cpLosses.length : null;
+  const showQuality = moves.length >= QUALITY_MIN_MOVES && avgCpl != null;
+  // Key moments: weakest move, missed wins, long-think mistakes worth studying.
   const weakest = moves.reduce<BlunderMove | null>((w, m) => ((m.wpLoss ?? 0) > (w?.wpLoss ?? 0) ? m : w), null);
   const showWeakest = weakest != null && (weakest.wpLoss ?? 0) >= 3;
+  const missedWins = moves.filter((m) => m.missedWin);
+  const studyMoves = moves.filter((m) =>
+    m.cls !== 'ok' && ['struggling', 'study'].includes(classifyMoveTime(m.clockMs, clockInitialMs)),
+  ).slice(0, 3);
   const badClasses = (['blunder', 'mistake', 'inaccuracy'] as MoveClass[]).filter((c) => counts[c] > 0);
 
   const downloadPgn = () => {
@@ -968,6 +1145,50 @@ function SummaryModal({ status, moves, plies, side, endReason, e0Cp, cumulativeW
     a.href = url; a.download = 'blunderable.pgn'; a.click();
     URL.revokeObjectURL(url);
   };
+
+  // Library payload: the played moves with proper headers (FEN start position).
+  const buildLibraryPayload = (folderId: string): SaveGamePayload => {
+    const movetext = getPgn().replace(/^\[[^\]]*\]\s*$/gm, '').trim();
+    const now = new Date();
+    const date = `${now.getFullYear()}.${String(now.getMonth() + 1).padStart(2, '0')}.${String(now.getDate()).padStart(2, '0')}`;
+    const headers: Record<string, string> = {
+      Event: 'Blunderable challenge',
+      Site: 'Blunderbored',
+      Date: date,
+      White: side === 'w' ? 'You' : `Stockfish ${ratingElo}`,
+      Black: side === 'b' ? 'You' : `Stockfish ${ratingElo}`,
+      Result: '*',
+      SetUp: '1',
+      FEN: startFen,
+    };
+    const headerText = Object.entries(headers).map(([k, v]) => `[${k} "${v}"]`).join('\n');
+    return {
+      folderId,
+      title: deriveTitle(headers),
+      pgn: `${headerText}\n\n${movetext || '*'}`,
+      headers,
+      nodeComments: {}, nodeMeta: {}, annotations: {}, nags: {},
+      reviewData: null,
+    };
+  };
+
+  // The library picker replaces the summary while open (it sits at a lower
+  // z-index than this modal, so stacking them would hide it).
+  if (showLibSave) {
+    return (
+      <LibraryModal
+        mode="save"
+        onSaveHere={(folderId) => {
+          saveGame(buildLibraryPayload(folderId))
+            .then(() => setSavedMsg('Game saved to library'))
+            .catch(() => setSavedMsg('Save failed — try again'));
+          setShowLibSave(false);
+        }}
+        onLoad={() => {}}
+        onClose={() => setShowLibSave(false)}
+      />
+    );
+  }
 
   return (
     <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/70 p-3 sm:p-4" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
@@ -982,7 +1203,8 @@ function SummaryModal({ status, moves, plies, side, endReason, e0Cp, cumulativeW
         </div>
 
         <div className="px-5 py-4 overflow-y-auto min-h-0 space-y-4">
-          {/* Headline: start → end + verdict (neutral chrome, colour only on the numbers/text) */}
+          {/* Headline: start → end, decomposed into your cost vs the engine's part.
+              Neutral text colour — class/verdict colours live on numbers only. */}
           <div>
             <div className="flex items-baseline justify-between gap-3">
               <span className="text-[10px] uppercase tracking-wide text-zinc-500">Position</span>
@@ -991,29 +1213,66 @@ function SummaryModal({ status, moves, plies, side, endReason, e0Cp, cumulativeW
                 <span className="ml-2 font-bold" style={{ color: verdict.color }}>{swingTxt}</span>
               </span>
             </div>
-            <p className="text-sm mt-1 leading-snug" style={{ color: verdict.color }}>{verdict.text}</p>
+            <p className="text-sm mt-1 leading-snug text-zinc-300">{verdict.text}</p>
+            {moves.length > 0 && (
+              <p className="text-[11px] mt-0.5 text-zinc-500 tabular-nums">
+                Your moves cost <span className="font-semibold text-zinc-300">−{cumulativeWp.toFixed(0)}%</span>
+                {engineDeltaWp >= 0.5 && <> · engine replies gave back <span className="font-semibold text-zinc-300">+{engineDeltaWp.toFixed(0)}%</span></>}
+                {engineDeltaWp <= -0.5 && <> · engine pressure <span className="font-semibold text-zinc-300">−{Math.abs(engineDeltaWp).toFixed(0)}%</span></>}
+              </p>
+            )}
           </div>
 
-          {/* Weakest move — prominent, scannable */}
-          {showWeakest && (
-            <div className="flex items-center gap-3">
-              <span className="text-[9px] uppercase tracking-widest text-zinc-500 w-14 shrink-0 leading-tight">Weakest move</span>
-              <div className="flex items-baseline gap-2 flex-wrap">
-                <span className="font-mono text-base text-zinc-100">{weakest!.notation}</span>
-                {CLASS_META[weakest!.cls].glyph && <span className="font-mono font-bold text-base" style={{ color: CLASS_META[weakest!.cls].color }}>{CLASS_META[weakest!.cls].glyph}</span>}
-                <span className="tabular-nums font-bold" style={{ color: CLASS_META[weakest!.cls].color }}>−{(weakest!.wpLoss ?? 0).toFixed(0)}%</span>
-                {weakest!.bestSan && <span className="text-xs text-zinc-500">better: <span className="font-mono text-emerald-400/90">{weakest!.bestSan}</span></span>}
-              </div>
+          {/* Key moments — weakest move, missed wins, study-worthy long thinks */}
+          {(showWeakest || missedWins.length > 0 || studyMoves.length > 0) && (
+            <div className="space-y-1.5">
+              {showWeakest && (
+                <div className="flex items-center gap-3">
+                  <span className="text-[10px] uppercase tracking-widest text-zinc-500 w-16 shrink-0 leading-tight">Weakest</span>
+                  <div className="flex items-baseline gap-2 flex-wrap">
+                    <span className="font-mono text-sm text-zinc-100">{weakest!.notation}</span>
+                    {CLASS_META[weakest!.cls].glyph && <span className="font-mono font-bold text-sm" style={{ color: CLASS_META[weakest!.cls].color }}>{CLASS_META[weakest!.cls].glyph}</span>}
+                    <span className="tabular-nums text-sm font-bold" style={{ color: CLASS_META[weakest!.cls].color }}>−{(weakest!.wpLoss ?? 0).toFixed(0)}%</span>
+                    {weakest!.bestSan && <span className="text-xs text-zinc-500">better: <span className="font-mono text-emerald-400/90">{weakest!.bestSan}</span></span>}
+                  </div>
+                </div>
+              )}
+              {missedWins.length > 0 && (
+                <div className="flex items-center gap-3">
+                  <span className="text-[10px] uppercase tracking-widest text-zinc-500 w-16 shrink-0 leading-tight">Missed win</span>
+                  <span className="text-xs text-amber-300/90 font-mono">
+                    {missedWins.map((m) => m.notation).join(' · ')}
+                  </span>
+                  <span className="text-[10px] text-zinc-600">was winning, let it out of the decisive band</span>
+                </div>
+              )}
+              {studyMoves.length > 0 && (
+                <div className="flex items-center gap-3">
+                  <span className="text-[10px] uppercase tracking-widest text-zinc-500 w-16 shrink-0 leading-tight">Study</span>
+                  <span className="text-xs text-zinc-400 font-mono">
+                    {studyMoves.map((m) => `${m.notation} (${(m.clockMs / 1000).toFixed(0)}s)`).join(' · ')}
+                  </span>
+                </div>
+              )}
             </div>
           )}
 
           {/* Primary stats */}
-          <div className="grid grid-cols-4 gap-x-2 gap-y-3">
+          <div className="grid grid-cols-3 gap-x-2 gap-y-3">
             <Stat label="Accuracy" value={`${accuracy}%`} color={accColor} />
-            <Stat label="Survived" value={`${survived}/${target}`} />
+            <Stat label="Survived" value={toEnd ? `${survived}` : `${survived}/${target}`} />
             <Stat label="Opponent" value={`${ratingElo}`} />
-            <Stat label="Your (est.)" value={`${estRating}`} />
           </div>
+
+          {/* Quality line — only with a meaningful sample (≥8 moves) */}
+          {showQuality && (
+            <p
+              className="text-[11px] text-zinc-500 tabular-nums"
+              title="Rough guide from average centipawn loss (engine-lab calibration). Small samples are noisy — treat as a band, not a rating."
+            >
+              avg loss ≈ {Math.round(avgCpl!)} cp/move — around <span className="text-zinc-300 font-semibold">{qualityBand(avgCpl!)}</span> play vs this opponent
+            </p>
+          )}
 
           {/* Secondary, muted */}
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-zinc-500">
@@ -1039,9 +1298,16 @@ function SummaryModal({ status, moves, plies, side, endReason, e0Cp, cumulativeW
           </div>
         </div>
 
-        <div className="px-5 py-3 border-t border-zinc-800 flex gap-2">
-          <button onClick={() => setShowSave(true)} className="px-3 py-2 rounded-sm bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-sm font-semibold" title="Save this position to practice later">★ Save position</button>
-          <button onClick={onNewChallenge} className="flex-1 py-2 rounded-sm bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-semibold">New challenge</button>
+        <div className="px-5 py-3 border-t border-zinc-800 flex flex-col gap-1.5">
+          {savedMsg && (
+            <p className={`text-[11px] font-semibold ${savedMsg.includes('failed') ? 'text-red-400' : 'text-emerald-400'}`}>{savedMsg}</p>
+          )}
+          <div className="flex gap-2">
+            <button onClick={() => setShowSave(true)} className="px-3 py-2 rounded-sm bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-semibold" title="Save this position to practice later">★ Position</button>
+            <button onClick={() => setShowLibSave(true)} className="px-3 py-2 rounded-sm bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-semibold" title="Save the played game to your library">＋ Library</button>
+            <button onClick={onRematch} className="px-3 py-2 rounded-sm bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-semibold" title="Same position, same settings, fresh run">↺ Rematch</button>
+            <button onClick={onNewChallenge} className="flex-1 py-2 rounded-sm bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-semibold">New challenge</button>
+          </div>
         </div>
       </div>
 
@@ -1060,15 +1326,21 @@ function SummaryModal({ status, moves, plies, side, endReason, e0Cp, cumulativeW
 export function BlunderableShell({ initialPositionId }: { initialPositionId?: string }) {
   const [phase, setPhase] = useState<Phase>('setup');
   const [config, setConfig] = useState<Config | null>(null);
+  // Bumped by "Rematch": same config, fresh PlayingScreen mount (fresh run).
+  const [rematchNonce, setRematchNonce] = useState(0);
 
   const start = useCallback((cfg: Config) => { setConfig(cfg); setPhase('playing'); }, []);
   const quit = useCallback(() => { setPhase('setup'); setConfig(null); }, []);
+  const rematch = useCallback(() => setRematchNonce((n) => n + 1), []);
 
-  const playKey = useMemo(() => (config ? `${config.side}-${config.target}-${config.ratingElo}-${config.fen}` : 'none'), [config]);
+  const playKey = useMemo(
+    () => (config ? `${config.side}-${config.target}-${config.ratingElo}-${config.fen}-${rematchNonce}` : 'none'),
+    [config, rematchNonce],
+  );
 
   return phase === 'setup' || !config ? (
     <SetupScreen onStart={start} initialPositionId={initialPositionId} />
   ) : (
-    <PlayingScreen key={playKey} config={config} onQuit={quit} />
+    <PlayingScreen key={playKey} config={config} onQuit={quit} onRematch={rematch} />
   );
 }

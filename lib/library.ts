@@ -30,11 +30,17 @@ function movesFingerprint(pgn: string): string {
     .toLowerCase();
 }
 
+// Prefer the fingerprint cached on the row; older rows predate the field and
+// fall back to computing it from the PGN.
+function rowFingerprint(g: LibraryGame): string {
+  return g.fingerprint ?? movesFingerprint(g.pgn);
+}
+
 export async function checkDuplicate(folderId: string, pgn: string): Promise<boolean> {
   const fp = movesFingerprint(pgn);
   if (!fp) return false;
   const existing = await db.games.where('folderId').equals(folderId).toArray();
-  return existing.some(g => movesFingerprint(g.pgn) === fp);
+  return existing.some(g => rowFingerprint(g) === fp);
 }
 
 // ─── Folder CRUD ──────────────────────────────────────────────────────────────
@@ -132,6 +138,34 @@ export async function getAdjacentGame(
 
 // ─── Bulk import ──────────────────────────────────────────────────────────────
 
+// Instrumentation: large PGN files used to freeze the tab with no signal as to
+// which phase (parse / analyze / save) was at fault. Every phase now logs
+// timing plus JS heap usage where the browser exposes it (Chromium only).
+function logImport(msg: string): void {
+  const mem = (performance as unknown as { memory?: { usedJSHeapSize: number } }).memory;
+  const heap = mem ? ` · heap ${(mem.usedJSHeapSize / 1048576).toFixed(0)}MB` : '';
+  console.log(`[pgn-import] ${msg}${heap}`);
+}
+
+// Hand the main thread back between batches so the UI can paint (progress bar)
+// and the event loop never blocks long enough to freeze.
+const yieldToMain = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
+
+// Batch sizes: annotation parsing replays every move through chess.js (the
+// expensive step), so it runs in small slices; fingerprinting is cheap string
+// work so it takes bigger slices. Rows are flushed to Dexie in large chunks so
+// the folder liveQuery doesn't refire (and re-render the list) per slice.
+const ANALYZE_BATCH = 200;
+const PARSE_BATCH = 20;
+const FLUSH_BATCH = 500;
+
+export interface ImportProgress {
+  phase: 'analyzing' | 'saving';
+  done: number;
+  total: number;
+}
+export type ImportProgressFn = (p: ImportProgress) => void;
+
 // Imports many parsed games into a folder in a single pass. Avoids the O(N²)
 // memory/CPU blow-up of calling checkDuplicate + saveGame per game (each of
 // which reloaded the whole folder): existing fingerprints are loaded ONCE, the
@@ -141,7 +175,7 @@ export async function importGames(
   parsed: ParsedPgnGame[],
 ): Promise<{ saved: number; dupes: number }> {
   const existing = await db.games.where('folderId').equals(folderId).toArray();
-  const seen = new Set(existing.map((g) => movesFingerprint(g.pgn)));
+  const seen = new Set(existing.map((g) => rowFingerprint(g)));
 
   const now = Date.now();
   const rows: LibraryGame[] = [];
@@ -175,6 +209,7 @@ function buildGameRow(folderId: string, g: ParsedPgnGame, now: number): LibraryG
     nodeMeta: ann?.nodeMeta ?? {},
     annotations: ann?.annotations ?? {},
     nags: ann?.nags ?? {},
+    fingerprint: movesFingerprint(g.pgn),
     reviewData: null,
     createdAt: now,
     updatedAt: now,
@@ -200,32 +235,78 @@ export interface ImportAnalysis {
 export async function analyzeImport(
   folderId: string,
   parsed: ParsedPgnGame[],
+  onProgress?: ImportProgressFn,
 ): Promise<ImportAnalysis> {
+  const t0 = performance.now();
   const existing = await db.games.where('folderId').equals(folderId).toArray();
-  const fpToExisting = new Map(existing.map((g) => [movesFingerprint(g.pgn), g]));
+  const fpToExisting = new Map(existing.map((g) => [rowFingerprint(g), g]));
+  logImport(`analyze: ${parsed.length} incoming vs ${existing.length} existing (${Math.round(performance.now() - t0)}ms to load + fingerprint existing)`);
 
   const seen = new Set<string>();
   const fresh: ParsedPgnGame[] = [];
   const conflicts: ImportConflict[] = [];
-  for (const g of parsed) {
+  for (let i = 0; i < parsed.length; i++) {
+    const g = parsed[i];
     const fp = movesFingerprint(g.pgn);
-    if (!fp || seen.has(fp)) continue;
-    seen.add(fp);
-    const ex = fpToExisting.get(fp);
-    if (ex) conflicts.push({ incoming: g, existingId: ex.id, existingTitle: ex.title });
-    else fresh.push(g);
+    if (fp && !seen.has(fp)) {
+      seen.add(fp);
+      const ex = fpToExisting.get(fp);
+      if (ex) conflicts.push({ incoming: g, existingId: ex.id, existingTitle: ex.title });
+      else fresh.push(g);
+    }
+    if ((i + 1) % ANALYZE_BATCH === 0) {
+      onProgress?.({ phase: 'analyzing', done: i + 1, total: parsed.length });
+      await yieldToMain();
+    }
   }
+  onProgress?.({ phase: 'analyzing', done: parsed.length, total: parsed.length });
+  logImport(`analyze done: ${fresh.length} fresh, ${conflicts.length} conflicts in ${Math.round(performance.now() - t0)}ms`);
   return { fresh, conflicts };
 }
 
 // Adds already-vetted games (no dup check — the caller resolved conflicts).
-export async function addParsedGames(folderId: string, games: ParsedPgnGame[]): Promise<number> {
+// Rows are built in small slices (annotation parsing replays each game through
+// chess.js) with the main thread yielded between slices, and flushed to Dexie
+// in chunks so the whole batch is never held in memory at once — the previous
+// build-everything-then-bulkAdd shape froze the tab on multi-MB files.
+export async function addParsedGames(
+  folderId: string,
+  games: ParsedPgnGame[],
+  onProgress?: ImportProgressFn,
+): Promise<number> {
   if (games.length === 0) return 0;
+  const t0 = performance.now();
   const now = Date.now();
-  const rows = games.map((g) => buildGameRow(folderId, g, now));
-  await db.games.bulkAdd(rows);
-  await seedConceptsForGames(rows);
-  return rows.length;
+  logImport(`save: building ${games.length} rows`);
+
+  // Concept seeding only reads id + headers; keeping just those lets each
+  // flushed chunk's annotation data be garbage-collected immediately.
+  const seedRows: Pick<LibraryGame, 'id' | 'headers'>[] = [];
+  let pending: LibraryGame[] = [];
+  let added = 0;
+
+  for (let i = 0; i < games.length; i += PARSE_BATCH) {
+    for (const g of games.slice(i, i + PARSE_BATCH)) {
+      const row = buildGameRow(folderId, g, now);
+      pending.push(row);
+      seedRows.push({ id: row.id, headers: row.headers });
+    }
+    if (pending.length >= FLUSH_BATCH) {
+      await db.games.bulkAdd(pending);
+      added += pending.length;
+      pending = [];
+      logImport(`save: flushed ${added}/${games.length}`);
+    }
+    onProgress?.({ phase: 'saving', done: Math.min(i + PARSE_BATCH, games.length), total: games.length });
+    await yieldToMain();
+  }
+  if (pending.length > 0) {
+    await db.games.bulkAdd(pending);
+    added += pending.length;
+  }
+  await seedConceptsForGames(seedRows);
+  logImport(`save done: ${added} rows in ${Math.round(performance.now() - t0)}ms`);
+  return added;
 }
 
 // Overwrites an existing game's moves/headers/annotations with an incoming PGN.
@@ -247,7 +328,7 @@ export async function replaceWithParsed(existingId: string, g: ParsedPgnGame): P
 
 // Batch concept seeding: ensure each unique ECO concept once, then bulk-add the
 // concept→game edges (rows are brand-new, so no edge de-dup needed).
-async function seedConceptsForGames(rows: LibraryGame[]): Promise<void> {
+async function seedConceptsForGames(rows: Pick<LibraryGame, 'id' | 'headers'>[]): Promise<void> {
   try {
     const ecoToConcept = new Map<string, string>();
     for (const r of rows) {
@@ -387,6 +468,7 @@ export interface ParsedPgnGame {
 }
 
 export function parsePgnGames(content: string): ParsedPgnGame[] {
+  const t0 = performance.now();
   const normalized = content.replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim();
 
   // Split at blank lines that precede a new PGN header block.
@@ -407,5 +489,6 @@ export function parsePgnGames(content: string): ParsedPgnGame[] {
     results.push({ pgn: trimmed, headers, title: deriveTitle(headers) });
   }
 
+  logImport(`parse: ${(content.length / 1048576).toFixed(2)}MB → ${results.length} games in ${Math.round(performance.now() - t0)}ms`);
   return results;
 }

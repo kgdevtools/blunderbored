@@ -37,7 +37,9 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --background: #0a0a0a;
+    /* Same navy as the logo/splash background so first paint doesn't flash a
+       lighter shade before page content mounts. */
+    --background: #030919;
     --foreground: #ededed;
   }
 }

@@ -184,7 +184,6 @@ export function LibraryModal({ mode, onSaveHere, onLoad, onClose, currentGameId,
   // Resizable + collapsible split. "Collapsed" is simply width 0, so the folder
   // panel hides and the game list takes the full width (key on mobile).
   const bodyRef = useRef<HTMLDivElement>(null);
-  const dragging = useRef(false);
   // Start collapsed on narrow screens so the game list keeps its width (titles
   // were truncated away on mobile). Safe to read window in the initializer: the
   // modal only ever mounts client-side (behind `showLibrary`), never via SSR.
@@ -192,19 +191,38 @@ export function LibraryModal({ mode, onSaveHere, onLoad, onClose, currentGameId,
     typeof window !== 'undefined' && window.innerWidth < 640 ? 0 : 220,
   );
   const leftCollapsed = leftWidth === 0;
+  // Dragging is state (not a ref) so the divider can restyle and the width
+  // transition can be suspended while the pointer is down.
+  const [dragging, setDragging] = useState(false);
+  // Remember the last expanded width so toggling reopens where the user left it
+  // (state, not a ref: it also sizes the panel's inner content during render).
+  // Updated alongside leftWidth in the drag handler — the only place a new
+  // expanded width can originate.
+  const [lastExpandedWidth, setLastExpandedWidth] = useState(220);
 
-  useEffect(() => {
-    const onMove = (e: PointerEvent) => {
-      if (!dragging.current || !bodyRef.current) return;
-      const rect = bodyRef.current.getBoundingClientRect();
-      const w = e.clientX - rect.left;
-      // Drag (almost) to the edge → collapse (0); otherwise clamp to a usable range.
-      setLeftWidth(w < 90 ? 0 : Math.max(150, Math.min(w, rect.width - 240)));
-    };
-    const onUp = () => { dragging.current = false; document.body.style.cursor = ''; };
-    window.addEventListener('pointermove', onMove);
-    window.addEventListener('pointerup', onUp);
-    return () => { window.removeEventListener('pointermove', onMove); window.removeEventListener('pointerup', onUp); };
+  const toggleFolderPanel = useCallback(() => {
+    setLeftWidth((w) => (w === 0 ? lastExpandedWidth : 0));
+  }, [lastExpandedWidth]);
+
+  // Pointer capture keeps move/up events flowing to the handle itself (mouse,
+  // touch and pen alike) — no window listeners, no lost drags outside the modal.
+  const onHandlePointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.currentTarget.setPointerCapture(e.pointerId);
+    setDragging(true);
+  }, []);
+  const onHandlePointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    if (!e.currentTarget.hasPointerCapture(e.pointerId) || !bodyRef.current) return;
+    const rect = bodyRef.current.getBoundingClientRect();
+    const w = e.clientX - rect.left;
+    // Drag (almost) to the edge → collapse (0); otherwise clamp to a usable range.
+    const next = w < 90 ? 0 : Math.max(150, Math.min(w, rect.width - 240));
+    setLeftWidth(next);
+    if (next > 0) setLastExpandedWidth(next);
+  }, []);
+  const onHandlePointerEnd = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
+    setDragging(false);
   }, []);
 
   // Close on Escape
@@ -304,11 +322,20 @@ export function LibraryModal({ mode, onSaveHere, onLoad, onClose, currentGameId,
         {/* ── Body ───────────────────────────────────────────────────────── */}
         {activeTab === 'folders' && (
           <div ref={bodyRef} className="flex flex-1 min-h-0">
-            {/* Left: folder tree (resizable + collapsible) */}
-            {!leftCollapsed && (
+            {/* Left: folder tree (resizable + collapsible). Stays mounted so
+                collapse/expand slides instead of popping in and out. */}
+            <div
+              style={{ width: leftWidth }}
+              className={[
+                'shrink-0 overflow-hidden bg-zinc-900/30',
+                dragging ? '' : 'transition-[width] duration-200 ease-out',
+                leftCollapsed ? '' : 'border-r border-zinc-700/80',
+              ].join(' ')}
+            >
+              {/* Inner keeps its expanded width so content doesn't reflow mid-slide. */}
               <div
-                style={{ width: leftWidth }}
-                className="shrink-0 border-r border-zinc-700/80 overflow-y-auto bg-zinc-900/30"
+                style={{ width: leftCollapsed ? lastExpandedWidth : leftWidth }}
+                className="h-full overflow-y-auto"
               >
                 <LibraryFolderTree
                   selectedFolderId={selectedFolderId}
@@ -317,22 +344,28 @@ export function LibraryModal({ mode, onSaveHere, onLoad, onClose, currentGameId,
                   mode={mode}
                 />
               </div>
-            )}
+            </div>
 
             {/* Drag handle + collapse/expand toggle */}
-            <div className="relative w-2 shrink-0">
+            <div className="relative w-2 shrink-0 select-none">
+              <div className={`absolute inset-0 transition-colors ${dragging ? 'bg-blue-500' : 'bg-zinc-800'}`} />
+              {/* Invisible oversized hit area: comfortable to grab by mouse or finger. */}
               <div
-                onPointerDown={() => { dragging.current = true; document.body.style.cursor = 'col-resize'; }}
-                className="absolute inset-0 cursor-col-resize bg-zinc-800 hover:bg-blue-500/60 active:bg-blue-500 transition-colors"
-                title="Drag to resize — drag fully left to collapse"
+                onPointerDown={onHandlePointerDown}
+                onPointerMove={onHandlePointerMove}
+                onPointerUp={onHandlePointerEnd}
+                onPointerCancel={onHandlePointerEnd}
+                onDoubleClick={toggleFolderPanel}
+                className="absolute inset-y-0 -left-2.5 -right-2.5 z-10 cursor-col-resize touch-none"
+                title="Drag to resize — drag fully left to collapse, double-click to toggle"
               />
               <button
-                onClick={() => setLeftWidth((w) => (w === 0 ? 220 : 0))}
-                className="absolute top-2 left-1/2 -translate-x-1/2 z-10 grid place-items-center w-5 h-7 rounded bg-zinc-700 hover:bg-zinc-600 text-zinc-300 hover:text-white shadow-md transition-colors"
+                onClick={toggleFolderPanel}
+                className="absolute top-1/2 -translate-y-1/2 left-1/2 -translate-x-1/2 z-20 grid place-items-center w-6 h-12 rounded-md bg-zinc-700 hover:bg-zinc-600 active:bg-zinc-500 text-zinc-300 hover:text-white shadow-md transition-colors"
                 title={leftCollapsed ? 'Show folders' : 'Hide folders'}
                 aria-label={leftCollapsed ? 'Show folders' : 'Hide folders'}
               >
-                <span className={`inline-flex transition-transform ${leftCollapsed ? '' : 'rotate-180'}`}>
+                <span className={`inline-flex transition-transform duration-200 ${leftCollapsed ? '' : 'rotate-180'}`}>
                   <ChevronIcon />
                 </span>
               </button>

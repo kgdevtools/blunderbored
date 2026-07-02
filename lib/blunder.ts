@@ -36,6 +36,38 @@ export const SELF_INACC_WP = 5;
 // death by a thousand cuts, even without a single outright blunder.
 export const CUMULATIVE_FAIL_WP = 20;
 
+// ── Regression fail (v2) ──────────────────────────────────────────────────────
+// "Don't make the position gradually worse": looking at the last WINDOW player
+// moves, the run fails if the position declined on at least MIN_DECLINES of
+// them AND the window's total self-loss reaches WINDOW_WP. Catches the steady
+// 3–4-move bleed that is too slow for the single-blunder gate and too recent
+// for the cumulative gate.
+export const REGRESSION_WINDOW = 4;
+export const REGRESSION_MIN_DECLINES = 3;
+export const REGRESSION_WINDOW_WP = 12;
+// A move counts as "declined" if it lost at least this much win% — filters out
+// scoring jitter on fine moves.
+export const REGRESSION_DECLINE_EPS_WP = 1;
+
+// `selfLosses` = per-player-move self-inflicted win% losses, in play order.
+export function regressionFail(selfLosses: number[]): boolean {
+  if (selfLosses.length < REGRESSION_WINDOW) return false;
+  const win = selfLosses.slice(-REGRESSION_WINDOW);
+  const declines = win.filter((l) => l >= REGRESSION_DECLINE_EPS_WP).length;
+  const total = win.reduce((a, b) => a + b, 0);
+  return declines >= REGRESSION_MIN_DECLINES && total >= REGRESSION_WINDOW_WP;
+}
+
+// ── Missed win (v2) ───────────────────────────────────────────────────────────
+// A badge (not a fail state — big drops usually trip a class anyway): the
+// position was winning and your move let it out of the decisive band.
+export const MISSED_WIN_FROM_WP = 80;
+export const MISSED_WIN_TO_WP = 65;
+
+export function isMissedWin(wpBefore: number, wpAfter: number): boolean {
+  return wpBefore >= MISSED_WIN_FROM_WP && wpAfter < MISSED_WIN_TO_WP;
+}
+
 // Player-POV centipawns → player win% (0–100). winP is symmetric about 0, so a
 // player-POV score maps straight to the player's own win probability.
 export function winPForPlayer(playerCp: number): number {
@@ -63,6 +95,8 @@ export interface BlunderMove {
   wpLoss?: number;   // self-inflicted win% loss for this move (current model)
   evalCp?: number;   // player-POV eval (cp) right after your move, pre-reply
   deltaCp?: number;  // legacy: player-POV eval drop (cp) — older saved records
+  cpLoss?: number;   // self-inflicted centipawn loss (v2 — feeds the quality line)
+  missedWin?: boolean; // was winning (≥80wp) and dropped out of the band (v2)
   clockMs: number;   // time the player spent on the move
   san?: string;      // bare SAN of your move (for the side-by-side report)
   engineSan?: string;    // the engine's reply SAN
