@@ -10,6 +10,7 @@ import { Chess, DEFAULT_POSITION } from 'chess.js';
 import { Chessboard } from '@zoendev/react-chessboard';
 import type { Square as CbSquare, CustomSquareProps } from '@zoendev/react-chessboard/dist/chessboard/types/index';
 import { useGameReviewer } from '@/hooks/useGameReviewer';
+import { REVIEW_DEPTH } from '@/lib/analysis';
 import { EvalBar } from '@/components/board/EvalBar';
 import { QUALITY_META, type MoveQuality } from '@/lib/accuracy';
 import { createRootNode, addMove, toMainLinePgn, sanitizePgn, type GameNode } from '@/lib/gameTree';
@@ -189,6 +190,95 @@ function ProgressBar({ current, total }: { current: number; total: number }) {
   );
 }
 
+// ── Analysis run modal (progress + stats + live log) ──────────────────────────
+
+import type { ReviewLogEvent } from '@/lib/analysis';
+
+const LOG_LEVEL_CLS: Record<ReviewLogEvent['level'], string> = {
+  info:  'text-zinc-400',
+  warn:  'text-amber-400',
+  error: 'text-red-400',
+};
+
+function AnalysisModal({
+  progress, logs, onHide,
+}: {
+  progress: { current: number; total: number };
+  logs: ReviewLogEvent[];
+  onHide: () => void;
+}) {
+  const logRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    logRef.current?.scrollTo({ top: logRef.current.scrollHeight });
+  }, [logs.length]);
+
+  const { current, total } = progress;
+  const pct = total > 0 ? Math.round((current / total) * 100) : 0;
+  // Pace + ETA from the run log's own timestamps (the last progress event).
+  const last = logs[logs.length - 1];
+  const elapsed = last ? last.ts / 1000 : 0;
+  const rate = elapsed > 0.5 && current > 0 ? current / elapsed : null;
+  const eta = rate && total > current ? Math.round((total - current) / rate) : null;
+
+  const stat = (label: string, value: string) => (
+    <div className="flex flex-col items-center px-2 py-1">
+      <span className="text-sm font-bold tabular-nums text-zinc-100 leading-tight">{value}</span>
+      <span className="text-[9px] uppercase tracking-wide text-zinc-500">{label}</span>
+    </div>
+  );
+
+  return (
+    <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 p-4">
+      <div className="w-full max-w-md bg-zinc-900 border border-zinc-700 rounded-lg shadow-2xl flex flex-col overflow-hidden">
+        <div className="px-4 pt-3 pb-2 flex items-center justify-between">
+          <h3 className="text-sm font-semibold text-zinc-100">Analysing game</h3>
+          <span className="text-xs tabular-nums text-zinc-400">{pct}%</span>
+        </div>
+
+        <div className="px-4">
+          <div className="h-1.5 rounded-full bg-zinc-800 overflow-hidden">
+            <div className="h-full bg-blue-500 transition-[width] duration-200" style={{ width: `${pct}%` }} />
+          </div>
+        </div>
+
+        {/* Stat tiles */}
+        <div className="px-2 py-1.5 grid grid-cols-4 divide-x divide-zinc-800">
+          {stat('positions', total ? `${current}/${total}` : '—')}
+          {stat('elapsed', `${elapsed.toFixed(0)}s`)}
+          {stat('pace', rate ? `${rate.toFixed(1)}/s` : '—')}
+          {stat('eta', eta != null ? `~${eta}s` : '—')}
+        </div>
+
+        {/* Live run log */}
+        <div
+          ref={logRef}
+          className="mx-3 mb-2 h-36 overflow-y-auto rounded bg-zinc-950/80 border border-zinc-800 px-2 py-1.5 font-mono text-[10px] leading-relaxed"
+        >
+          {logs.length === 0 ? (
+            <p className="text-zinc-600">Starting engine…</p>
+          ) : (
+            logs.map((l, i) => (
+              <div key={i} className={LOG_LEVEL_CLS[l.level]}>
+                <span className="text-zinc-600 tabular-nums">{(l.ts / 1000).toFixed(1).padStart(6)}s</span> {l.msg}
+              </div>
+            ))
+          )}
+        </div>
+
+        <div className="px-4 pb-3 flex justify-end">
+          <button
+            onClick={onHide}
+            className="px-3 py-1 rounded text-xs text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 transition-colors"
+            title="Continue in the background — progress stays visible in the panel"
+          >
+            Hide
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Shell ─────────────────────────────────────────────────────────────────────
 
 interface ReviewerShellProps {
@@ -202,6 +292,10 @@ export function ReviewerShell({ initialPgn }: ReviewerShellProps) {
   const [flipped, setFlipped]   = useState(false);
   const [showGameInfo, setShowGameInfo]   = useState(false);
   const [showReport, setShowReport]       = useState(false);
+  // Analysis modal: shown for every run; the user can hide it and keep the
+  // inline progress. Re-arms on each new run.
+  const [hideAnalysisModal, setHideAnalysisModal] = useState(false);
+  useEffect(() => { if (reviewer.isLoading) setHideAnalysisModal(false); }, [reviewer.isLoading]);
   const [reviewComments, setReviewComments] = useState<Map<number, string>>(new Map());
 
   // Sync local headers from reviewer (allows editing in the modal)
@@ -492,8 +586,16 @@ export function ReviewerShell({ initialPgn }: ReviewerShellProps) {
                   total={reviewer.progress.total}
                 />
                 <p className="text-xs text-zinc-500 mt-2">
-                  Stockfish 18 Lite — depth 14
+                  Stockfish 18 Lite — depth {REVIEW_DEPTH}
                 </p>
+                {hideAnalysisModal && (
+                  <button
+                    onClick={() => setHideAnalysisModal(false)}
+                    className="mt-2 text-[11px] text-blue-400 hover:text-blue-300 underline-offset-2 hover:underline"
+                  >
+                    Show analysis log
+                  </button>
+                )}
               </div>
             ) : reviewer.review ? (
               <ReviewMoveList
@@ -513,6 +615,15 @@ export function ReviewerShell({ initialPgn }: ReviewerShellProps) {
           </div>
         </div>
       </div>
+
+      {/* ── Analysis run modal ───────────────────────────────────────────── */}
+      {reviewer.isLoading && !hideAnalysisModal && (
+        <AnalysisModal
+          progress={reviewer.progress}
+          logs={reviewer.logs}
+          onHide={() => setHideAnalysisModal(true)}
+        />
+      )}
 
       {/* ── Game info modal ──────────────────────────────────────────────── */}
       {showGameInfo && (

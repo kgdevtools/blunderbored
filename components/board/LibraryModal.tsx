@@ -5,6 +5,7 @@ import type { LibraryGame } from '@/lib/db';
 import { useFolderPath } from '@/hooks/useLibrary';
 import { LibraryFolderTree } from './LibraryFolderTree';
 import { LibraryGameList } from './LibraryGameList';
+import { useFolderImport, ImportOverlays, ExportIcon, exportFolderDeep } from './LibraryImportExport';
 import { ConceptList } from './ConceptList';
 import { GraphView } from './GraphView';
 import { PerformanceCharts, type ChartKind } from './PerformanceCharts';
@@ -236,6 +237,18 @@ export function LibraryModal({ mode, onSaveHere, onLoad, onClose, currentGameId,
     if (selectedFolderId) onSaveHere(selectedFolderId);
   }, [selectedFolderId, onSaveHere]);
 
+  // Import lifecycle (file → analyze → resolve → report) — one instance for the
+  // whole modal; the folder tree calls importFile with the target folder.
+  const { state: importState, importFile, resolveConflict, cancelConflict, dismissReport } = useFolderImport();
+
+  const selPath = useFolderPath(selectedFolderId);
+  const selName = selPath.length ? selPath[selPath.length - 1].name : 'library';
+  const handleExportSelected = useCallback(async () => {
+    if (!selectedFolderId) return;
+    const n = await exportFolderDeep(selectedFolderId, selName);
+    console.log(`[library] exported ${n} game(s) from "${selName}"`);
+  }, [selectedFolderId, selName]);
+
   return (
     /* Backdrop */
     <div
@@ -258,6 +271,16 @@ export function LibraryModal({ mode, onSaveHere, onLoad, onClose, currentGameId,
           </div>
 
           <div className="flex items-center gap-1.5 shrink-0">
+            {activeTab === 'folders' && selectedFolderId && (
+              <button
+                onClick={handleExportSelected}
+                className="p-1 rounded text-zinc-500 hover:text-zinc-200 hover:bg-zinc-700 transition-colors"
+                title={`Export "${selName}" as PGN (incl. subfolders)`}
+                aria-label="Export selected folder as PGN"
+              >
+                <ExportIcon size={13} />
+              </button>
+            )}
             {mode === 'save' && selectedFolderId && (
               <button
                 onClick={handleSaveHere}
@@ -341,6 +364,7 @@ export function LibraryModal({ mode, onSaveHere, onLoad, onClose, currentGameId,
                   selectedFolderId={selectedFolderId}
                   onSelect={setSelectedFolderId}
                   onLoad={(game) => { onLoad(game); onClose(); }}
+                  onImportFile={importFile}
                   mode={mode}
                 />
               </div>
@@ -371,8 +395,8 @@ export function LibraryModal({ mode, onSaveHere, onLoad, onClose, currentGameId,
               </button>
             </div>
 
-            {/* Right: game list */}
-            <div className="flex-1 min-w-0 overflow-y-auto">
+            {/* Right: game list (scrolls internally so its footer never overlays rows) */}
+            <div className="flex-1 min-w-0 min-h-0">
               <LibraryGameList
                 folderId={selectedFolderId}
                 mode={mode}
@@ -422,6 +446,14 @@ export function LibraryModal({ mode, onSaveHere, onLoad, onClose, currentGameId,
           </div>
         )}
       </div>
+
+      {/* Import lifecycle overlays (progress / conflicts / report) */}
+      <ImportOverlays
+        state={importState}
+        onResolve={resolveConflict}
+        onCancel={cancelConflict}
+        onDismissReport={dismissReport}
+      />
     </div>
   );
 }

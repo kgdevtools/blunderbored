@@ -50,6 +50,22 @@ export interface GameReview {
   blackSummary: SideSummary;
 }
 
+// Structured run-log event, streamed to the UI while a review runs.
+export interface ReviewLogEvent {
+  ts:    number;                      // ms since analysis start
+  level: 'info' | 'warn' | 'error';
+  msg:   string;
+}
+export type ReviewLogFn = (e: ReviewLogEvent) => void;
+
+// Engine depth for every reviewed position — single source of truth (the UI
+// label reads this too).
+export const REVIEW_DEPTH = 18;
+
+// Per-move centipawn loss is capped so a single mate-related swing (±10000
+// internally) doesn't nuke the ACPL average — matches Lichess practice.
+const CP_LOSS_CAP = 1000;
+
 // ── Phase classifier ──────────────────────────────────────────────────────────
 
 export function classifyPhase(fen: string): GamePhase {
@@ -92,9 +108,18 @@ function uciToSan(fen: string, uci: string): string {
 export async function analyseGame(
   pgn: string,
   onProgress?: (current: number, total: number) => void,
+  onLog?: ReviewLogFn,
 ): Promise<GameReview> {
-  // Pre-load book (silent — falls back to heuristic if unavailable)
+  const t0 = performance.now();
+  const log = (level: ReviewLogEvent['level'], msg: string) => {
+    onLog?.({ ts: Math.round(performance.now() - t0), level, msg });
+    if (level !== 'info') console.warn(`[reviewer] ${msg}`);
+  };
+
+  // Pre-load book; when it's unavailable the opening heuristic stands in.
   await ensureBookLoaded();
+  const bookSrc = isBookAvailable() ? 'polyglot .bin' : 'opening heuristic (no .bin shipped)';
+  console.log(`[reviewer] engine depth ${REVIEW_DEPTH} · book: ${bookSrc}`);
 
   const chess = new Chess();
   chess.loadPgn(pgn);
@@ -111,19 +136,29 @@ export async function analyseGame(
   }
 
   const total = fens.length;
+  log('info', `parsed ${moves.length} moves (${total} positions) · Stockfish depth ${REVIEW_DEPTH} · book: ${bookSrc}`);
 
-  // Evaluate every position with single best-move line at depth 18
+  // Evaluate every position with a single best-move line at REVIEW_DEPTH
   const evals: EngineMultiLine[] = [];
+  let evalFailures = 0;
+  const tEval = performance.now();
   for (let i = 0; i < total; i++) {
     onProgress?.(i, total);
     try {
-      const lines = await engineService.evaluateMulti(fens[i], 18, 1);
+      const lines = await engineService.evaluateMulti(fens[i], REVIEW_DEPTH, 1);
       evals.push(lines[0]);
     } catch {
       // On engine failure push a neutral placeholder so indices stay aligned
       evals.push({ rank: 1, score: 0, mate: null, depth: 0, pv: [] });
+      evalFailures++;
+      log('warn', `engine failed on position ${i} — neutral placeholder used (verdicts near move ${Math.ceil(i / 2)} may be off)`);
+    }
+    if ((i + 1) % 10 === 0 || i + 1 === total) {
+      const msPer = (performance.now() - tEval) / (i + 1);
+      log('info', `evaluated ${i + 1}/${total} positions · ${msPer.toFixed(0)}ms/pos avg`);
     }
   }
+  if (evalFailures) log('warn', `${evalFailures} position(s) could not be evaluated`);
 
   // Build ReviewedMove array
   const reviewed: ReviewedMove[] = [];
@@ -138,7 +173,8 @@ export async function analyseGame(
     const phase = classifyPhase(fenBefore);
 
     const { wpBefore, wpAfter, winPctLoss } = winPctLossForSide(evalBefore, evalAfter, color);
-    const cpLoss = Math.max(0, color === 'w' ? evalBefore - evalAfter : evalAfter - evalBefore);
+    const cpLoss = Math.min(CP_LOSS_CAP,
+      Math.max(0, color === 'w' ? evalBefore - evalAfter : evalAfter - evalBefore));
     const accuracy = moveAccuracy(wpBefore, wpAfter);
 
     // Best move
@@ -151,12 +187,14 @@ export async function analyseGame(
     // Book detection. Primary: Polyglot .bin (exact). Fallback when the .bin
     // isn't loaded: a conservative, file-free heuristic — a near-best move still
     // in the opening is treated as theory rather than flagged. The .bin
-    // supersedes this once shipped.
+    // supersedes this once shipped. A move that ends the game is never "theory"
+    // (the heuristic used to label a move-7 checkmate as book).
+    const gameOver = new Chess(fenAfter).isGameOver();
     let isBook = false;
     if (isBookAvailable()) {
       const bookMoves = await getBookMoves(fenBefore);
       isBook = bookMoves.includes(playedUci);
-    } else if (phase === 'opening' && i < 16 && Math.max(0, winPctLoss) < 5) {
+    } else if (phase === 'opening' && i < 16 && Math.max(0, winPctLoss) < 5 && !gameOver) {
       isBook = true;
     }
 
@@ -207,11 +245,15 @@ export async function analyseGame(
 
   onProgress?.(total, total);
 
-  return {
-    moves:        reviewed,
-    whiteSummary: buildSideSummary(reviewed, 'w'),
-    blackSummary: buildSideSummary(reviewed, 'b'),
-  };
+  const whiteSummary = buildSideSummary(reviewed, 'w');
+  const blackSummary = buildSideSummary(reviewed, 'b');
+  const tally = (s: SideSummary) =>
+    `${s.accuracy.toFixed(1)}% · ${s.counts.inaccuracy} inacc, ${s.counts.mistake} mistakes, ${s.counts.blunder} blunders`;
+  log('info', `classified ${reviewed.length} moves in ${((performance.now() - t0) / 1000).toFixed(1)}s`);
+  log('info', `White ${tally(whiteSummary)}`);
+  log('info', `Black ${tally(blackSummary)}`);
+
+  return { moves: reviewed, whiteSummary, blackSummary };
 }
 
 function buildSideSummary(moves: ReviewedMove[], side: 'w' | 'b'): SideSummary {

@@ -4,6 +4,15 @@ import { useFolderChildren, useFolderGames } from '@/hooks/useLibrary';
 import { createFolder, renameFolder, deleteFolder, saveGame, updateGame, deriveTitle } from '@/lib/library';
 import type { LibraryFolder, LibraryGame } from '@/lib/db';
 import { GameInfoModal } from './GameInfoModal';
+import { ImportFileButton, ImportIcon, ExportIcon, exportFolderDeep } from './LibraryImportExport';
+
+function TrashIconSm() {
+  return (
+    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+    </svg>
+  );
+}
 
 // ─── Icons ────────────────────────────────────────────────────────────────────
 
@@ -68,11 +77,13 @@ interface ContextMenuState { id: string; x: number; y: number }
 function ContextMenu({
   menu,
   onRename,
+  onExport,
   onDelete,
   onClose,
 }: {
   menu: ContextMenuState;
   onRename: () => void;
+  onExport: () => void;
   onDelete: () => void;
   onClose: () => void;
 }) {
@@ -89,7 +100,7 @@ function ContextMenu({
   return (
     <div
       ref={ref}
-      className="fixed z-[60] bg-zinc-800 border border-zinc-600 rounded shadow-xl text-xs py-1 min-w-[120px]"
+      className="fixed z-[60] bg-zinc-800 border border-zinc-600 rounded shadow-xl text-xs py-1 min-w-[140px]"
       style={{ top: menu.y, left: menu.x }}
     >
       <button
@@ -97,6 +108,12 @@ function ContextMenu({
         onClick={() => { onRename(); onClose(); }}
       >
         Rename
+      </button>
+      <button
+        className="w-full text-left px-3 py-1.5 hover:bg-zinc-700 text-zinc-200 transition-colors"
+        onClick={() => { onExport(); onClose(); }}
+      >
+        Export PGN (incl. subfolders)
       </button>
       <button
         className="w-full text-left px-3 py-1.5 hover:bg-zinc-700 text-red-400 transition-colors"
@@ -124,6 +141,8 @@ interface TreeState {
   onCloseContextMenu: () => void;
   onAddFolder: (parentId: string | null, depth: number) => void;
   onAddGame: (folderId: string) => void;
+  onImportFile: (folderId: string, file: File) => void;
+  onExportFolder: (folder: LibraryFolder) => void;
   onLoad: (game: LibraryGame) => void;
 }
 
@@ -251,6 +270,27 @@ function FolderRow({
             <PlusIcon />
           </button>
         )}
+        <ImportFileButton
+          onFile={(f) => tree.onImportFile(folder.id, f)}
+          className="p-0.5 rounded text-zinc-400 hover:text-zinc-100 hover:bg-zinc-600 transition-colors"
+          title="Import PGN into this folder"
+        >
+          <ImportIcon size={11} />
+        </ImportFileButton>
+        <button
+          className="p-0.5 rounded text-zinc-400 hover:text-zinc-100 hover:bg-zinc-600 transition-colors"
+          title="Export this folder as PGN (incl. subfolders)"
+          onClick={(e) => { e.stopPropagation(); tree.onExportFolder(folder); }}
+        >
+          <ExportIcon size={11} />
+        </button>
+        <button
+          className="p-0.5 rounded text-red-400/70 hover:text-red-300 hover:bg-red-900/50 transition-colors"
+          title="Delete folder"
+          onClick={(e) => { e.stopPropagation(); tree.onStartDelete(folder.id); }}
+        >
+          <TrashIconSm />
+        </button>
       </div>
     </div>
   );
@@ -343,10 +383,12 @@ export function LibraryFolderTree({
   selectedFolderId,
   onSelect,
   onLoad,
+  onImportFile,
 }: {
   selectedFolderId: string | null;
   onSelect: (id: string) => void;
   onLoad: (game: LibraryGame) => void;
+  onImportFile: (folderId: string, file: File) => void;
   mode: 'browse' | 'save';
 }) {
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
@@ -395,6 +437,11 @@ export function LibraryFolderTree({
     }
   }, [onSelect]);
 
+  const onExportFolder = useCallback(async (folder: LibraryFolder) => {
+    const n = await exportFolderDeep(folder.id, folder.name);
+    console.log(`[library] exported ${n} game(s) from "${folder.name}"`);
+  }, []);
+
   const tree: TreeState = {
     selectedFolderId,
     expandedIds,
@@ -410,6 +457,8 @@ export function LibraryFolderTree({
     onCloseContextMenu: () => setContextMenu(null),
     onAddFolder,
     onAddGame,
+    onImportFile,
+    onExportFolder,
   };
 
   return (
@@ -419,7 +468,7 @@ export function LibraryFolderTree({
         <FolderList parentId={null} tree={tree} />
       </div>
 
-      {/* Root-level new folder */}
+      {/* Footer: new folder + import into the selected folder (bottom-left) */}
       <div className="px-2 pt-1.5 pb-1 border-t border-zinc-700/50 mt-1 shrink-0">
         <button
           className="flex items-center gap-1.5 text-xs font-semibold leading-none tracking-tight text-zinc-500 hover:text-zinc-200 transition-colors w-full py-1"
@@ -428,6 +477,15 @@ export function LibraryFolderTree({
           <PlusIcon />
           <span>New Folder</span>
         </button>
+        <ImportFileButton
+          disabled={!selectedFolderId}
+          onFile={(f) => { if (selectedFolderId) onImportFile(selectedFolderId, f); }}
+          className="flex items-center gap-1.5 text-xs font-semibold leading-none tracking-tight text-zinc-500 hover:text-zinc-200 disabled:opacity-40 disabled:cursor-not-allowed transition-colors w-full py-1"
+          title={selectedFolderId ? 'Import a PGN file into the selected folder' : 'Select a folder first'}
+        >
+          <ImportIcon size={11} />
+          <span>Import PGN</span>
+        </ImportFileButton>
       </div>
 
       {/* Context menu */}
@@ -435,6 +493,14 @@ export function LibraryFolderTree({
         <ContextMenu
           menu={contextMenu}
           onRename={() => setRenamingId(contextMenu.id)}
+          onExport={() => {
+            const f = contextMenu.id;
+            void (async () => {
+              const { db } = await import('@/lib/db');
+              const folder = await db.folders.get(f);
+              if (folder) await onExportFolder(folder);
+            })();
+          }}
           onDelete={() => setDeletingId(contextMenu.id)}
           onClose={() => setContextMenu(null)}
         />

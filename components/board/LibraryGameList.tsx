@@ -1,7 +1,7 @@
 'use client';
 import { useState, useRef, useCallback, useMemo, useEffect } from 'react';
-import { useFolderGames, useFolderPath } from '@/hooks/useLibrary';
-import { updateGame, deleteGame, parsePgnGames, deriveTitle, analyzeImport, addParsedGames, replaceWithParsed, type ImportAnalysis, type ImportProgress } from '@/lib/library';
+import { useFolderGames } from '@/hooks/useLibrary';
+import { updateGame, deleteGame, deriveTitle } from '@/lib/library';
 import type { LibraryGame } from '@/lib/db';
 import { gameFormat, formatPgnDate, matchesFilters, hasActiveFilters, type GameFilters } from '@/lib/gameMeta';
 import { GameInfoModal } from './GameInfoModal';
@@ -17,12 +17,6 @@ const FORMAT_STYLE: Record<string, string> = {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function formatEta(secs: number): string {
-  if (secs < 60) return `${secs}s`;
-  const m = Math.floor(secs / 60);
-  return `${m}m ${secs % 60}s`;
-}
-
 function formatDate(ts: number): string {
   const diff = Date.now() - ts;
   const days = Math.floor(diff / 86_400_000);
@@ -30,6 +24,20 @@ function formatDate(ts: number): string {
   if (days === 1) return 'Yesterday';
   if (days < 7) return `${days} days ago`;
   return new Date(ts).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+// Main-line move count from the raw PGN (headers/comments/variations stripped).
+function countMoves(pgn: string): number {
+  let body = pgn.replace(/^\[[^\]]*\]\s*$/gm, '').replace(/\{[^}]*\}/g, ' ');
+  let prev: string;
+  do { prev = body; body = body.replace(/\([^()]*\)/g, ' '); } while (body !== prev);
+  let plies = 0;
+  for (let tok of body.split(/\s+/)) {
+    tok = tok.replace(/^\d+\.+/, '');
+    if (!tok || tok === '*' || /^(1-0|0-1|1\/2-1\/2)$/.test(tok) || tok.startsWith('$')) continue;
+    plies++;
+  }
+  return Math.ceil(plies / 2);
 }
 
 // Uniform-width result chip: same footprint for 1-0 / 0-1 / ½-½ so the column
@@ -141,6 +149,16 @@ function GameRow({
   const pgnDate = formatPgnDate(game.headers);
   const eco = game.headers.ECO?.trim();
   const analysed = game.reviewData != null;
+  const moves = useMemo(() => countMoves(game.pgn), [game.pgn]);
+  // Player ratings from the PGN, shown as W/B when either is present.
+  const elos = (() => {
+    const w = parseInt(game.headers.WhiteElo ?? '', 10);
+    const b = parseInt(game.headers.BlackElo ?? '', 10);
+    if (!w && !b) return null;
+    return `${w || '?'}·${b || '?'}`;
+  })();
+  // Edited only counts when it happened meaningfully after the import/save.
+  const edited = game.updatedAt - game.createdAt > 60_000;
 
   // ── Deleting confirmation ────────────────────────────────────────────────
   if (isDeleting) {
@@ -188,23 +206,33 @@ function GameRow({
           {detail && (
             <div className="text-[10px] tracking-tight text-zinc-500 truncate leading-tight mt-px">{detail}</div>
           )}
-          {/* Metadata strip: format · ECO · PGN date · analysed */}
+          {/* Metadata strip: format · ECO · moves · elos · PGN date · analysed */}
           <div className="flex items-center gap-1.5 mt-0.5 text-[9px] leading-none text-zinc-500">
             <span className={`px-1 py-0.5 rounded-sm border ${FORMAT_STYLE[format]} font-medium tracking-tight`}>
               {format}
             </span>
             {eco && <span className="font-mono text-zinc-400">{eco}</span>}
+            {moves > 0 && <span className="tabular-nums">{moves} mv</span>}
+            {elos && <span className="tabular-nums" title="White · Black rating">{elos}</span>}
             {pgnDate && <span className="tabular-nums">{pgnDate}</span>}
             {analysed && <span className="text-emerald-400/90 font-medium tracking-tight">Analysed</span>}
           </div>
         </div>
 
-        {/* Result + saved date — own wrapper, stacked, right-aligned */}
+        {/* Result + timestamps — stacked, right-aligned */}
         <div className="flex flex-col items-end gap-0.5 shrink-0">
           <ResultBadge result={game.headers.Result} />
-          <span className="text-[10px] text-zinc-500 tabular-nums tracking-tight leading-none">
-            {formatDate(game.updatedAt)}
+          <span
+            className="text-[10px] text-zinc-500 tabular-nums tracking-tight leading-none"
+            title={`Added ${new Date(game.createdAt).toLocaleString()}${edited ? ` · edited ${new Date(game.updatedAt).toLocaleString()}` : ''}`}
+          >
+            {formatDate(game.createdAt)}
           </span>
+          {edited && (
+            <span className="text-[9px] text-zinc-600 tabular-nums tracking-tight leading-none">
+              ✎ {formatDate(game.updatedAt)}
+            </span>
+          )}
         </div>
 
         {/* Actions — icon-only to save space; visible on touch, hover on desktop */}
@@ -254,110 +282,6 @@ export function LibraryGameList({ folderId, mode, onLoad, onSaveHere, filters, c
   const games = useFolderGames(folderId);
   const filtered = useMemo(() => games.filter((g) => matchesFilters(g, filters)), [games, filters]);
   const filtersActive = hasActiveFilters(filters);
-  const folderPath = useFolderPath(folderId);
-  const folderName = folderPath.length > 0 ? folderPath[folderPath.length - 1].name : 'library';
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const [importing, setImporting] = useState(false);
-  const [importResult, setImportResult] = useState<string | null>(null);
-  // Set when an import contains games that already exist — drives the resolve modal.
-  const [conflict, setConflict] = useState<ImportAnalysis | null>(null);
-
-  // ── Import progress (percentage + ETA) ─────────────────────────────────────
-  const [progress, setProgress] = useState<{ phase: ImportProgress['phase']; pct: number; etaSecs: number | null } | null>(null);
-  const phaseStart = useRef<{ phase: string; t: number } | null>(null);
-  const lastProgressPaint = useRef(0);
-  const onImportProgress = useCallback((p: ImportProgress) => {
-    const now = performance.now();
-    if (!phaseStart.current || phaseStart.current.phase !== p.phase) {
-      phaseStart.current = { phase: p.phase, t: now };
-    }
-    // Throttle re-renders to ~5/s; always let the final tick of a phase through.
-    if (now - lastProgressPaint.current < 200 && p.done < p.total) return;
-    lastProgressPaint.current = now;
-    const frac = p.total > 0 ? p.done / p.total : 0;
-    const elapsed = (now - phaseStart.current.t) / 1000;
-    // ETA extrapolated from this phase's own pace; withheld until there's
-    // enough signal for the estimate to be meaningful.
-    const etaSecs = frac > 0.03 && elapsed > 1 ? Math.round((elapsed * (1 - frac)) / frac) : null;
-    setProgress({ phase: p.phase, pct: Math.round(frac * 100), etaSecs });
-  }, []);
-  const clearProgress = useCallback(() => {
-    setProgress(null);
-    phaseStart.current = null;
-    lastProgressPaint.current = 0;
-  }, []);
-
-  const handleExportPgn = useCallback(() => {
-    if (filtered.length === 0) return;
-    // Blob from an array of parts — no giant intermediate joined string.
-    const parts = filtered.flatMap((g) => [g.pgn, '\n\n']);
-    const blob = new Blob(parts, { type: 'application/x-chess-pgn' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${folderName.replace(/[^\w-]+/g, '_')}.pgn`;
-    a.click();
-    URL.revokeObjectURL(url);
-    setImportResult(`${filtered.length} game${filtered.length !== 1 ? 's' : ''} exported`);
-  }, [filtered, folderName]);
-
-  const handleImportPgn = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file || !folderId) return;
-    e.target.value = '';
-
-    setImporting(true);
-    setImportResult(null);
-    try {
-      console.log(`[pgn-import] file "${file.name}" · ${(file.size / 1048576).toFixed(2)}MB`);
-      const text = await file.text();
-      const parsed = parsePgnGames(text);
-      if (parsed.length === 0) {
-        setImportResult('No valid games found in the file.');
-        return;
-      }
-      const analysis = await analyzeImport(folderId, parsed, onImportProgress);
-      if (analysis.conflicts.length === 0) {
-        const added = await addParsedGames(folderId, analysis.fresh, onImportProgress);
-        setImportResult(`${added} game${added !== 1 ? 's' : ''} imported`);
-      } else {
-        setConflict(analysis); // ask the user how to resolve
-      }
-    } catch (err) {
-      console.error('[pgn-import] failed:', err);
-      setImportResult('Failed to import — check the file and try again.');
-    } finally {
-      setImporting(false);
-      clearProgress();
-    }
-  }, [folderId, onImportProgress, clearProgress]);
-
-  // Apply the user's conflict choice and run the deferred import.
-  const resolveImport = useCallback(async (action: 'skip' | 'replace' | 'keep') => {
-    if (!conflict || !folderId) return;
-    const { fresh, conflicts } = conflict;
-    setConflict(null);
-    setImporting(true);
-    try {
-      const toAdd = action === 'keep' ? [...fresh, ...conflicts.map((c) => c.incoming)] : fresh;
-      const added = await addParsedGames(folderId, toAdd, onImportProgress);
-      let replaced = 0;
-      if (action === 'replace') {
-        for (const c of conflicts) { await replaceWithParsed(c.existingId, c.incoming); replaced++; }
-      }
-      const skipped = action === 'skip' ? conflicts.length : 0;
-      const parts = [`${added} imported`];
-      if (replaced) parts.push(`${replaced} replaced`);
-      if (skipped) parts.push(`${skipped} skipped`);
-      setImportResult(parts.join(', '));
-    } catch (err) {
-      console.error('[pgn-import] failed:', err);
-      setImportResult('Failed to import — check the file and try again.');
-    } finally {
-      setImporting(false);
-      clearProgress();
-    }
-  }, [conflict, folderId, onImportProgress, clearProgress]);
 
   // ── Empty / no folder states ───────────────────────────────────────────────
   if (!folderId) {
@@ -373,8 +297,8 @@ export function LibraryGameList({ folderId, mode, onLoad, onSaveHere, filters, c
 
   return (
     <div className="flex flex-col h-full">
-      {/* Game list */}
-      <div className="flex-1 min-h-0">
+      {/* Game list — its own scroll container, so nothing overlays the rows */}
+      <div className="flex-1 min-h-0 overflow-y-auto">
         {games.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full gap-1.5 p-5 text-center">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="text-zinc-700">
@@ -390,11 +314,14 @@ export function LibraryGameList({ folderId, mode, onLoad, onSaveHere, filters, c
           </div>
         ) : (
           <>
-            {filtersActive && (
-              <div className="px-3 py-1 text-[10px] tracking-tight text-zinc-500 border-b border-zinc-800/70">
-                {filtered.length} of {games.length} game{games.length !== 1 ? 's' : ''}
-              </div>
-            )}
+            <div className="px-3 py-1 text-[10px] tracking-tight text-zinc-500 border-b border-zinc-800/70 flex justify-between">
+              <span>
+                {filtersActive
+                  ? `${filtered.length} of ${games.length} game${games.length !== 1 ? 's' : ''}`
+                  : `${games.length} game${games.length !== 1 ? 's' : ''}`}
+              </span>
+              <span className="text-zinc-600">by last modified</span>
+            </div>
             {filtered.map((game, i) => (
               <GameRow
                 key={game.id}
@@ -410,143 +337,17 @@ export function LibraryGameList({ folderId, mode, onLoad, onSaveHere, filters, c
         )}
       </div>
 
-      {/* Footer: save + import */}
-      <div className="shrink-0 px-3 py-2 border-t border-zinc-700/50 flex flex-col gap-1">
-        <div className="flex justify-end gap-0">
-          <button
-            onClick={() => fileInputRef.current?.click()}
-            disabled={importing || !folderId}
-            className="px-3 py-1 rounded-l text-[11px] font-semibold leading-none tracking-tight bg-zinc-800 hover:bg-zinc-700/80 text-zinc-400 hover:text-zinc-200 disabled:opacity-40 disabled:cursor-not-allowed transition-colors border border-zinc-700/60 border-r-0"
-          >
-            {importing ? 'Importing…' : '↑ Import PGN'}
-          </button>
-          <button
-            onClick={handleExportPgn}
-            disabled={importing || filtered.length === 0}
-            className="px-3 py-1 text-[11px] font-semibold leading-none tracking-tight bg-zinc-800 hover:bg-zinc-700/80 text-zinc-400 hover:text-zinc-200 disabled:opacity-40 disabled:cursor-not-allowed transition-colors border border-zinc-700/60 border-r-0"
-            title="Export the listed games as a PGN file"
-          >
-            ↓ Export PGN
-          </button>
+      {/* Footer: save target action (import/export live on folders + header) */}
+      {mode === 'save' && (
+        <div className="shrink-0 px-3 py-2 border-t border-zinc-700/50 flex justify-end">
           <button
             onClick={onSaveHere}
-            className={`px-3 py-1 rounded-r text-[11px] font-semibold leading-none tracking-tight transition-colors
-              ${mode === 'save'
-                ? 'bg-emerald-700 hover:bg-emerald-600 text-white'
-                : 'bg-zinc-700 hover:bg-zinc-600 text-zinc-200'}`}
+            className="px-3 py-1 rounded text-[11px] font-semibold leading-none tracking-tight bg-emerald-700 hover:bg-emerald-600 text-white transition-colors"
           >
-            {mode === 'save' ? '+ Save Here' : '+ Save'}
+            + Save Here
           </button>
         </div>
-
-        {importing && progress && (
-          <div className="flex items-center gap-2 pt-0.5">
-            <div className="flex-1 h-1.5 rounded-full bg-zinc-800 overflow-hidden">
-              <div
-                className="h-full rounded-full bg-blue-500 transition-[width] duration-200 ease-out"
-                style={{ width: `${progress.pct}%` }}
-              />
-            </div>
-            <span className="text-[10px] tabular-nums text-zinc-400 shrink-0 leading-none">
-              {progress.phase === 'analyzing' ? 'Checking duplicates' : 'Importing'} {progress.pct}%
-              {progress.etaSecs != null && ` · ~${formatEta(progress.etaSecs)} left`}
-            </span>
-          </div>
-        )}
-
-        {importResult && !importing && (
-          <p className={`text-xs font-semibold leading-tight tracking-tight ${importResult.includes('Failed') ? 'text-red-400' : 'text-emerald-400'}`}>
-            {importResult}
-          </p>
-        )}
-
-        <input
-          ref={fileInputRef}
-          type="file"
-          // Broad accept so the OS file dialog never greys out a valid .pgn
-          // (some Linux/Chromium pickers filter by MIME, not extension). The
-          // parser validates content regardless.
-          accept=".pgn,.PGN,.txt,application/x-chess-pgn,application/vnd.chess-pgn,application/octet-stream,text/plain"
-          className="hidden"
-          onChange={handleImportPgn}
-        />
-      </div>
-
-      {conflict && (
-        <ImportConflictModal
-          analysis={conflict}
-          onResolve={resolveImport}
-          onCancel={() => setConflict(null)}
-        />
       )}
-    </div>
-  );
-}
-
-// ─── Import conflict resolution modal ─────────────────────────────────────────
-
-function ImportConflictModal({
-  analysis,
-  onResolve,
-  onCancel,
-}: {
-  analysis: ImportAnalysis;
-  onResolve: (action: 'skip' | 'replace' | 'keep') => void;
-  onCancel: () => void;
-}) {
-  const { fresh, conflicts } = analysis;
-  return (
-    <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/60 p-4" onClick={onCancel}>
-      <div
-        className="bg-zinc-800 border border-zinc-700 rounded-lg shadow-2xl w-full max-w-sm flex flex-col max-h-[80vh]"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="px-4 pt-4 pb-2 shrink-0">
-          <h3 className="text-sm font-semibold text-zinc-100">
-            {conflicts.length} duplicate{conflicts.length !== 1 ? 's' : ''} found
-          </h3>
-          <p className="text-xs text-zinc-400 mt-1">
-            {conflicts.length === 1 ? 'This game is' : 'These games are'} already in this folder
-            {fresh.length > 0 && ` · ${fresh.length} new game${fresh.length !== 1 ? 's' : ''} will import either way`}.
-          </p>
-        </div>
-
-        <ul className="px-4 py-1 overflow-y-auto text-xs text-zinc-300 space-y-0.5 min-h-0">
-          {conflicts.map((c, i) => (
-            <li key={i} className="truncate flex gap-1.5">
-              <span className="text-zinc-600 tabular-nums shrink-0">{i + 1}.</span>
-              <span className="truncate">{c.existingTitle}</span>
-            </li>
-          ))}
-        </ul>
-
-        <div className="px-4 pt-3 pb-4 flex flex-col gap-1.5 shrink-0 border-t border-zinc-700/60 mt-2">
-          <button
-            onClick={() => onResolve('skip')}
-            className="w-full py-1.5 rounded bg-zinc-700 hover:bg-zinc-600 text-zinc-100 text-xs font-semibold transition-colors"
-          >
-            Skip duplicates {fresh.length > 0 && `(import ${fresh.length} new only)`}
-          </button>
-          <button
-            onClick={() => onResolve('replace')}
-            className="w-full py-1.5 rounded bg-amber-700 hover:bg-amber-600 text-white text-xs font-semibold transition-colors"
-          >
-            Replace existing with imported
-          </button>
-          <button
-            onClick={() => onResolve('keep')}
-            className="w-full py-1.5 rounded bg-zinc-700 hover:bg-zinc-600 text-zinc-100 text-xs font-semibold transition-colors"
-          >
-            Keep both (import as copies)
-          </button>
-          <button
-            onClick={onCancel}
-            className="w-full py-1.5 rounded text-zinc-400 hover:text-zinc-200 text-xs transition-colors"
-          >
-            Cancel
-          </button>
-        </div>
-      </div>
     </div>
   );
 }

@@ -11,15 +11,17 @@ interface GameSummaryProps {
 export function GameSummary({ review }: GameSummaryProps) {
   const { whiteSummary, blackSummary } = review;
   const tiers = ALL_TIERS.filter(q => (whiteSummary.counts[q] ?? 0) > 0 || (blackSummary.counts[q] ?? 0) > 0);
+  // Engine-best moves per side (data already on each ReviewedMove; free insight).
+  const bestCount = (side: 'w' | 'b') => review.moves.filter(m => m.color === side && m.best).length;
 
   const sides = [
-    { name: 'White', summary: whiteSummary },
-    { name: 'Black', summary: blackSummary },
+    { name: 'White', summary: whiteSummary, best: bestCount('w') },
+    { name: 'Black', summary: blackSummary, best: bestCount('b') },
   ] as const;
 
   return (
     <div className="border border-zinc-700 rounded p-2.5 grid grid-cols-2 gap-x-4 text-sm shrink-0 mb-2">
-      {sides.map(({ name, summary }, i) => (
+      {sides.map(({ name, summary, best }, i) => (
         <div key={name} className={i === 1 ? 'border-l border-zinc-800 pl-4' : ''}>
           {/* Player + accuracy */}
           <div className="flex items-baseline justify-between gap-2 mb-1.5">
@@ -31,8 +33,15 @@ export function GameSummary({ review }: GameSummaryProps) {
           </div>
 
           {/* Classifiers, listed vertically under each player */}
-          {tiers.length > 0 && (
+          {(tiers.length > 0 || best > 0) && (
             <div className="space-y-0.5">
+              {best > 0 && (
+                <div className="flex items-center gap-1.5 text-xs">
+                  <span className="font-mono font-bold w-3 shrink-0 text-emerald-400">★</span>
+                  <span className="text-zinc-400 flex-1 truncate">Best</span>
+                  <span className="text-zinc-200 tabular-nums">{best}</span>
+                </div>
+              )}
               {tiers.map(q => {
                 const meta = QUALITY_META[q];
                 return (

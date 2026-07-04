@@ -36,6 +36,42 @@ function rowFingerprint(g: LibraryGame): string {
   return g.fingerprint ?? movesFingerprint(g.pgn);
 }
 
+// ── Fuzzy duplicate detection ─────────────────────────────────────────────────
+// The exact fingerprint misses re-exports of the same game (annotations added,
+// clock tags stripped, slightly different movetext formatting per site). Second
+// net: same players (normalised, order-invariant) + same total ply count +
+// same result. Deterministic — no similarity scores to tune.
+
+function normalisePlayer(name: string | undefined): string {
+  return (name ?? '')
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .split(/\s+/)
+    .filter(Boolean)
+    .sort()
+    .join(' ');
+}
+
+// Ply count from the fingerprint string (movetext minus headers/comments):
+// tokens that aren't move numbers, results, NAGs or variation parens are moves.
+function countPlies(fp: string): number {
+  let n = 0;
+  for (const tok of fp.split(' ')) {
+    if (!tok || /^\d+\.+$/.test(tok) || tok.startsWith('$')) continue;
+    if (tok === '*' || /^(1-0|0-1|1\/2-1\/2)$/.test(tok)) continue;
+    if (/^[()]+$/.test(tok)) continue;
+    n++;
+  }
+  return n;
+}
+
+// Order-invariant so a White/Black swap in a re-export still matches.
+function fuzzyKey(headers: Record<string, string>, fp: string): string | null {
+  const players = [normalisePlayer(headers.White), normalisePlayer(headers.Black)].sort();
+  if (!players[0] && !players[1]) return null; // anonymous games: exact match only
+  return `${players.join('|')}#${countPlies(fp)}#${headers.Result ?? '?'}`;
+}
+
 export async function checkDuplicate(folderId: string, pgn: string): Promise<boolean> {
   const fp = movesFingerprint(pgn);
   if (!fp) return false;
@@ -227,11 +263,13 @@ export interface ImportConflict {
 export interface ImportAnalysis {
   fresh: ParsedPgnGame[];      // no existing match — safe to add
   conflicts: ImportConflict[]; // same moves as a game already in the folder
+  fuzzy: ImportConflict[];     // same players + ply count + result — likely the same game
 }
 
-// Splits a parsed batch into brand-new games and ones that duplicate an existing
-// game in the folder, so the UI can ask the user how to resolve rather than
-// silently skipping. Intra-batch duplicates are collapsed to the first instance.
+// Splits a parsed batch into brand-new games, exact duplicates, and likely
+// (fuzzy) duplicates of an existing game in the folder, so the UI can ask the
+// user how to resolve rather than silently skipping. Intra-batch duplicates
+// are collapsed to the first instance.
 export async function analyzeImport(
   folderId: string,
   parsed: ParsedPgnGame[],
@@ -240,19 +278,39 @@ export async function analyzeImport(
   const t0 = performance.now();
   const existing = await db.games.where('folderId').equals(folderId).toArray();
   const fpToExisting = new Map(existing.map((g) => [rowFingerprint(g), g]));
+  const fuzzyToExisting = new Map<string, LibraryGame>();
+  for (const g of existing) {
+    const k = fuzzyKey(g.headers, rowFingerprint(g));
+    if (k && !fuzzyToExisting.has(k)) fuzzyToExisting.set(k, g);
+  }
   logImport(`analyze: ${parsed.length} incoming vs ${existing.length} existing (${Math.round(performance.now() - t0)}ms to load + fingerprint existing)`);
 
   const seen = new Set<string>();
+  const seenFuzzy = new Set<string>();
   const fresh: ParsedPgnGame[] = [];
   const conflicts: ImportConflict[] = [];
+  const fuzzy: ImportConflict[] = [];
   for (let i = 0; i < parsed.length; i++) {
     const g = parsed[i];
     const fp = movesFingerprint(g.pgn);
     if (fp && !seen.has(fp)) {
       seen.add(fp);
       const ex = fpToExisting.get(fp);
-      if (ex) conflicts.push({ incoming: g, existingId: ex.id, existingTitle: ex.title });
-      else fresh.push(g);
+      if (ex) {
+        conflicts.push({ incoming: g, existingId: ex.id, existingTitle: ex.title });
+      } else {
+        const fk = fuzzyKey(g.headers, fp);
+        const fex = fk ? fuzzyToExisting.get(fk) : undefined;
+        if (fex) {
+          fuzzy.push({ incoming: g, existingId: fex.id, existingTitle: fex.title });
+        } else if (fk && seenFuzzy.has(fk)) {
+          // same game twice within the batch under different formatting
+          fuzzy.push({ incoming: g, existingId: '', existingTitle: '(earlier game in this file)' });
+        } else {
+          if (fk) seenFuzzy.add(fk);
+          fresh.push(g);
+        }
+      }
     }
     if ((i + 1) % ANALYZE_BATCH === 0) {
       onProgress?.({ phase: 'analyzing', done: i + 1, total: parsed.length });
@@ -260,8 +318,40 @@ export async function analyzeImport(
     }
   }
   onProgress?.({ phase: 'analyzing', done: parsed.length, total: parsed.length });
-  logImport(`analyze done: ${fresh.length} fresh, ${conflicts.length} conflicts in ${Math.round(performance.now() - t0)}ms`);
-  return { fresh, conflicts };
+  logImport(`analyze done: ${fresh.length} fresh, ${conflicts.length} exact dupes, ${fuzzy.length} likely dupes in ${Math.round(performance.now() - t0)}ms`);
+  return { fresh, conflicts, fuzzy };
+}
+
+// ─── Folder deep helpers (export / info) ──────────────────────────────────────
+
+// A folder's id plus all descendant folder ids (depth ≤ 3 keeps this tiny).
+export async function folderIdsDeep(folderId: string): Promise<string[]> {
+  const ids: string[] = [];
+  const walk = async (id: string) => {
+    ids.push(id);
+    const children = await db.folders.where('parentId').equals(id).toArray();
+    for (const c of children) await walk(c.id);
+  };
+  await walk(folderId);
+  return ids;
+}
+
+// Every game in the folder and its subfolders (for folder-level export).
+export async function gamesInFolderDeep(folderId: string): Promise<LibraryGame[]> {
+  const ids = await folderIdsDeep(folderId);
+  return db.games.where('folderId').anyOf(ids).toArray();
+}
+
+// Trigger a browser download of the given games as one multi-game PGN.
+export function downloadPgn(games: { pgn: string }[], baseName: string): void {
+  const parts = games.flatMap((g) => [g.pgn, '\n\n']);
+  const blob = new Blob(parts, { type: 'application/x-chess-pgn' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${baseName.replace(/[^\w-]+/g, '_') || 'games'}.pgn`;
+  a.click();
+  URL.revokeObjectURL(url);
 }
 
 // Adds already-vetted games (no dup check — the caller resolved conflicts).

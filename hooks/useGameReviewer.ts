@@ -1,6 +1,6 @@
 'use client';
 import { useState, useCallback, useRef } from 'react';
-import { analyseGame, GameReview, ReviewedMove } from '@/lib/analysis';
+import { analyseGame, GameReview, ReviewedMove, ReviewLogEvent } from '@/lib/analysis';
 import { sanitizePgn } from '@/lib/gameTree';
 
 const START_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
@@ -16,6 +16,7 @@ export interface UseGameReviewerReturn {
   isLoading:    boolean;
   error:        string | null;
   progress:     GameReviewerProgress;
+  logs:         ReviewLogEvent[];   // structured run log, streamed while analysing
   originalPgn:  string | null;
   headers:      Record<string, string>;
 
@@ -42,6 +43,7 @@ export function useGameReviewer(): UseGameReviewerReturn {
   const [currentMoveIndex, setCurrentMoveIndex] = useState(-1);
   const [originalPgn, setOriginalPgn] = useState<string | null>(null);
   const [headers, setHeaders]         = useState<Record<string, string>>({});
+  const [logs, setLogs]               = useState<ReviewLogEvent[]>([]);
 
   // Increments on every new loadPgn call so stale async results are discarded
   const analysisIdRef = useRef(0);
@@ -59,14 +61,29 @@ export function useGameReviewer(): UseGameReviewerReturn {
     setHeaders(parsed);
     setCurrentMoveIndex(-1);
     setProgress({ current: 0, total: 0 });
+    setLogs([]);
 
     try {
-      const result = await analyseGame(clean, (current, total) => {
-        if (analysisIdRef.current === id) setProgress({ current, total });
-      });
+      const t0 = performance.now();
+      const result = await analyseGame(
+        clean,
+        (current, total) => {
+          if (analysisIdRef.current === id) setProgress({ current, total });
+        },
+        (e) => {
+          if (analysisIdRef.current === id) setLogs((prev) => [...prev, e]);
+        },
+      );
       if (analysisIdRef.current === id) {
         setReview(result);
         setCurrentMoveIndex(-1);
+        // Structured completion log + a window handle so devtools (and the
+        // E2E benchmark) can inspect the full review object directly.
+        const secs = ((performance.now() - t0) / 1000).toFixed(1);
+        const fmt = (s: GameReview['whiteSummary']) =>
+          `${s.accuracy.toFixed(1)}% (?!${s.counts.inaccuracy} ?${s.counts.mistake} ??${s.counts.blunder})`;
+        console.log(`[reviewer] done in ${secs}s · ${result.moves.length} moves · W ${fmt(result.whiteSummary)} · B ${fmt(result.blackSummary)}`);
+        (window as unknown as { __review?: GameReview }).__review = result;
       }
     } catch (err) {
       console.error('[GameReviewer] Analysis failed:', err);
@@ -120,6 +137,7 @@ export function useGameReviewer(): UseGameReviewerReturn {
     isLoading,
     error,
     progress,
+    logs,
     originalPgn,
     headers,
     currentMoveIndex,
