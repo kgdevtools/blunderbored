@@ -2,8 +2,10 @@
 // move classifier, the engine's "random top-3 non-blunder" reply pick, and the
 // success-trend test. No engine I/O here — callers pass in engine results.
 
+// .ts extension so this pure module runs under Node's type-stripping in the
+// scripts/engine-lab test harnesses (same pattern as lib/classification.ts).
 import { Chess } from 'chess.js';
-import { winP } from './accuracy';
+import { winP } from './accuracy.ts';
 
 export type MoveClass = 'ok' | 'inaccuracy' | 'mistake' | 'blunder';
 
@@ -45,17 +47,24 @@ export const CUMULATIVE_FAIL_WP = 20;
 export const REGRESSION_WINDOW = 4;
 export const REGRESSION_MIN_DECLINES = 3;
 export const REGRESSION_WINDOW_WP = 12;
-// A move counts as "declined" if it lost at least this much win% — filters out
-// scoring jitter on fine moves.
-export const REGRESSION_DECLINE_EPS_WP = 1;
+// A move counts as "declined" if it lost at least this much win%. 2.5 sits
+// above 600k-node scoring jitter (~1–2wp on fine moves) — at the old 1wp,
+// noise-level entries counted as declines and "one inaccuracy + noise" could
+// masquerade as a trend (verified against a live run 2026-07-15).
+export const REGRESSION_DECLINE_EPS_WP = 2.5;
 
 // `selfLosses` = per-player-move self-inflicted win% losses, in play order.
+// Fires only while the bleed is CURRENT (the latest move itself declined) —
+// a slide that already stopped shouldn't fail you retroactively, and this
+// doubles as hysteresis against boundary flips from scoring noise; a resumed
+// slide re-arms the gate on the next declining move.
 export function regressionFail(selfLosses: number[]): boolean {
   if (selfLosses.length < REGRESSION_WINDOW) return false;
   const win = selfLosses.slice(-REGRESSION_WINDOW);
   const declines = win.filter((l) => l >= REGRESSION_DECLINE_EPS_WP).length;
   const total = win.reduce((a, b) => a + b, 0);
-  return declines >= REGRESSION_MIN_DECLINES && total >= REGRESSION_WINDOW_WP;
+  const currentDecline = win[win.length - 1] >= REGRESSION_DECLINE_EPS_WP;
+  return currentDecline && declines >= REGRESSION_MIN_DECLINES && total >= REGRESSION_WINDOW_WP;
 }
 
 // ── Missed win (v2) ───────────────────────────────────────────────────────────

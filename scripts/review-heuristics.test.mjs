@@ -152,6 +152,28 @@ check('queenless 16 pieces → endgame',
   classifyPhase('r5k1/5ppp/pp3n2/8/P1P5/1P6/5PPP/R5K1 w - - 0 21'), 'endgame');
 check('bare K+P endgame → endgame', classifyPhase('8/5ppp/4k3/8/8/8/6PP/6K1 w - - 0 40'), 'endgame');
 
+// ── blunderable regression gate (lib/blunder.ts) ─────────────────────────────
+{
+  const { regressionFail, classifySelfLoss } = await import('../lib/blunder.ts');
+  // True steady bleed, still current → fail.
+  check('steady current decline fails', regressionFail([0, 4, 4, 4]), true);
+  check('resumed slide re-arms', regressionFail([4, 4, 1, 4]), true);
+  // One inaccuracy + scoring noise must NOT read as a trend (live-run case
+  // 2026-07-15: [0, 9, 2, 2] fired at eps=1 while a bit-identical replay
+  // measured 11.7wp and survived — noise-level entries were counted).
+  check('inaccuracy + noise is not a trend', regressionFail([0, 9, 2, 2]), false);
+  // A slide that already stopped doesn't fail retroactively.
+  check('stopped slide survives', regressionFail([4, 4, 4, 1]), false);
+  // Improving/holding play can never trip the gate.
+  check('zero-loss run survives', regressionFail([0, 0, 0, 0]), false);
+  check('short history never fires', regressionFail([9, 9, 9]), false);
+  // Self-loss classes on the 5/10/15 scale.
+  check('15wp self-loss = blunder', classifySelfLoss(15), 'blunder');
+  check('10wp = mistake', classifySelfLoss(10), 'mistake');
+  check('5wp = inaccuracy', classifySelfLoss(5), 'inaccuracy');
+  check('4.99wp = ok', classifySelfLoss(4.99), 'ok');
+}
+
 // ── CLASSIFY constants sanity (puzzle generator consumes these) ──────────────
 check('tier bands ascend',
   CLASSIFY.EXCELLENT_MAX_WPL < CLASSIFY.GOOD_MAX_WPL
