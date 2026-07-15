@@ -28,7 +28,7 @@ import {
   type NodeAnnotation,
   type NodeMeta,
 } from '@/lib/gameTree';
-import { extractNodeData } from '@/lib/pgnImport';
+import { extractNodeData, parsePgnHeaders } from '@/lib/pgnImport';
 
 // Builds the per-node arrow/highlight state (incl. an undo history) from the
 // arrows/highlights recovered out of a PGN's [%cal]/[%csl] tokens.
@@ -109,11 +109,7 @@ export function useBoardGame() {
     }
     const history = chess.history({ verbose: true });
     // Parse PGN header tags (chess.header() no-arg form is deprecated)
-    const parsed: Record<string, string> = {};
-    for (const m of clean.matchAll(/^\[(\w+)\s+"([^"]*)"\]/gm)) {
-      parsed[m[1]] = m[2];
-    }
-    setHeadersState(parsed);
+    setHeadersState(parsePgnHeaders(clean));
 
     const startFen = history[0]?.before ?? DEFAULT_POSITION;
     const newRoot = createRootNode(startFen);

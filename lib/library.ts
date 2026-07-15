@@ -2,7 +2,7 @@ import { nanoid } from 'nanoid';
 import { db, LibraryFolder, LibraryGame, GraphEdge, StoredAnnotation, BoardDraft } from './db';
 import type { GameReview } from './analysis';
 import type { GameNode, NodeAnnotation, NodeMeta } from './gameTree';
-import { parseGameAnnotations } from './pgnImport';
+import { parseGameAnnotations, parsePgnHeaders } from './pgnImport';
 import { ensureOpeningConcept, ensureOpeningHierarchy } from './concepts';
 import { ensureConceptGameEdge, deleteEdgesForGame } from './edges';
 
@@ -21,7 +21,7 @@ async function seedConceptsForGame(game: LibraryGame): Promise<void> {
 
 // ─── Duplicate detection ──────────────────────────────────────────────────────
 
-function movesFingerprint(pgn: string): string {
+export function movesFingerprint(pgn: string): string {
   return pgn
     .replace(/\[[^\]]*\]/g, '')  // strip header tags
     .replace(/\{[^}]*\}/g, '')   // strip comments
@@ -570,10 +570,7 @@ export function parsePgnGames(content: string): ParsedPgnGame[] {
     const trimmed = chunk.trim();
     if (!trimmed.startsWith('[')) continue;
 
-    const headers: Record<string, string> = {};
-    for (const m of trimmed.matchAll(/^\[(\w+)\s+"([^"]*)"\]/gm)) {
-      headers[m[1]] = m[2];
-    }
+    const headers = parsePgnHeaders(trimmed);
     if (Object.keys(headers).length === 0) continue;
 
     results.push({ pgn: trimmed, headers, title: deriveTitle(headers) });

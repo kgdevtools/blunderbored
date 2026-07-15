@@ -16,6 +16,7 @@ interface Row { num: number; w?: Cell; b?: Cell; }
 
 export function GameMovesList({
   plies, side, moves, mode, clockInitialMs = 180_000, autoScroll = true, className = '', heightClass = 'max-h-44',
+  activePly = null, onSelectPly,
 }: {
   plies: Ply[];
   side: 'w' | 'b';
@@ -25,9 +26,16 @@ export function GameMovesList({
   autoScroll?: boolean;
   className?: string;
   heightClass?: string;
+  /** Review navigation: index of the currently shown ply (−1/null = start). */
+  activePly?: number | null;
+  onSelectPly?: (index: number) => void;
 }) {
   const endRef = useRef<HTMLDivElement>(null);
+  const activeRef = useRef<HTMLDivElement>(null);
   useEffect(() => { if (autoScroll) endRef.current?.scrollIntoView({ block: 'nearest' }); }, [plies.length, autoScroll]);
+  useEffect(() => {
+    if (activePly != null && activePly >= 0) activeRef.current?.scrollIntoView({ block: 'nearest' });
+  }, [activePly]);
 
   // The k-th of the player's own plies maps to moves[k] (quality/eval/time).
   const bmByIndex = new Map<number, BlunderMove>();
@@ -55,10 +63,11 @@ export function GameMovesList({
     const isPlayer = cell.ply.color === side;
     const bm = bmByIndex.get(cell.index);
     const meta = bm ? CLASS_META[bm.cls] : null;
-    return (
+    const isActive = activePly === cell.index;
+    const body = (
       <div className="flex flex-col gap-0.5">
         <span className="inline-flex items-baseline gap-1 leading-tight">
-          <span className={`font-mono ${isPlayer ? 'text-zinc-100' : 'text-zinc-400'}`}>{cell.ply.san}</span>
+          <span className={`font-mono ${isActive ? 'text-white font-semibold' : isPlayer ? 'text-zinc-100' : 'text-zinc-400'}`}>{cell.ply.san}</span>
           {mode === 'report' && meta?.glyph && <span className="font-mono font-bold text-xs" style={{ color: meta.color }}>{meta.glyph}</span>}
           {mode === 'report' && bm?.evalCp != null && <span className="font-mono text-[10px] tabular-nums text-zinc-500">{fmtCp(bm.evalCp)}</span>}
         </span>
@@ -75,6 +84,17 @@ export function GameMovesList({
             </span>
           );
         })()}
+      </div>
+    );
+    if (!onSelectPly) return body;
+    return (
+      <div ref={isActive ? activeRef : undefined}>
+        <button
+          onClick={() => onSelectPly(cell.index)}
+          className={`w-full text-left rounded-sm px-1 -mx-1 transition-colors ${isActive ? 'bg-indigo-700/50' : 'hover:bg-zinc-800/60'}`}
+        >
+          {body}
+        </button>
       </div>
     );
   };

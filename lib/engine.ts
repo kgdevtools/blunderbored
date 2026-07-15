@@ -352,7 +352,10 @@ class EngineService {
 
   // Full-strength fixed-depth multi-PV evaluation (cached).
   evaluateMulti(fen: string, depth = 18, pvCount = 3): Promise<EngineMultiLine[]> {
-    const cacheKey = `${fen}:${pvCount}`;
+    // Depth is part of the key: the two-pass reviewer asks for the same FEN at
+    // different depths, and a shallow pass-1 result must not satisfy the deep
+    // pass (nor a later, deeper verification request).
+    const cacheKey = `${fen}:${depth}:${pvCount}`;
     const hit = this.multiCache.get(cacheKey);
     if (hit) return Promise.resolve(hit);
 

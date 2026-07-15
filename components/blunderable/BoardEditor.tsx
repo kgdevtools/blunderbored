@@ -7,8 +7,9 @@ import type { Square as CbSquare } from '@zoendev/react-chessboard/dist/chessboa
 import { normalizeFen } from '@/lib/gameTree';
 
 // Compact position editor: place pieces (click/drag), undo/reset/clear/erase, and
-// — when a PGN is loaded — a /board-style ply-nav row sits UNDER the board. No
-// card chrome. A side-to-move radio overlays the board's top-right corner.
+// — when a PGN is loaded — a /board-style transport row sits UNDER the board with
+// a 3-dot menu for position actions. No card chrome. A side-to-move radio
+// overlays the board's top-right corner.
 
 const EMPTY_FEN = '8/8/8/8/8/8/8/8 w - - 0 1';
 const START_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
@@ -49,19 +50,37 @@ function PieceButton({ piece, selected, onSelect }: { piece: string; selected: s
   );
 }
 
-const navBtn = 'flex-1 py-1.5 rounded-sm bg-zinc-800 hover:bg-zinc-700 disabled:opacity-25 disabled:cursor-not-allowed text-zinc-200 text-sm transition-colors';
+// Match /board's BoardControls visual vocabulary (bg-zinc-700 transport bar).
+const navBtn = 'flex-1 py-1.5 rounded-sm bg-zinc-700 hover:bg-zinc-600 disabled:opacity-30 disabled:cursor-not-allowed text-zinc-200 text-sm transition-colors';
 const toolBtn = 'px-2 py-1.5 rounded-sm bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-[11px] transition-colors';
+const menuItem = 'flex items-center gap-2 w-full text-left px-3 py-1.5 hover:bg-zinc-700 text-zinc-200';
+const sectionLabel = 'px-3 pt-1.5 pb-0.5 text-[10px] font-semibold uppercase tracking-widest text-zinc-500';
 
-export function BoardEditor({ fen, onFenChange, orientation, onFlip, ply, maxBoard = 460 }: {
+function HamburgerIcon() {
+  return (
+    <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round">
+      <line x1="3" y1="6" x2="21" y2="6" />
+      <line x1="3" y1="12" x2="21" y2="12" />
+      <line x1="3" y1="18" x2="21" y2="18" />
+    </svg>
+  );
+}
+
+export function BoardEditor({ fen, onFenChange, orientation, onFlip, ply, maxBoard = 460, onSavePosition }: {
   fen: string;
   onFenChange: (fen: string) => void;
   orientation: 'white' | 'black';
   onFlip: () => void;
   ply?: PlyNav | null;
   maxBoard?: number;
+  onSavePosition?: () => void;
 }) {
   const [selectedPiece, setSelectedPiece] = useState<string | null>(null);
   const [, setHistory] = useState<string[]>([fen]);
+  const [showMenu, setShowMenu] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const [boardWidth, setBoardWidth] = useState(0);
@@ -78,13 +97,44 @@ export function BoardEditor({ fen, onFenChange, orientation, onFlip, ply, maxBoa
   }, [maxBoard]);
 
   useEffect(() => {
+    // Functional append keyed on the fen prop — no cascade (bails out when the
+    // fen is already the history head).
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setHistory((h) => (h[h.length - 1] === fen ? h : [...h, fen].slice(-30)));
   }, [fen]);
+
+  // Close 3-dot menu on outside click (same pattern as /board's BoardControls).
+  useEffect(() => {
+    if (!showMenu) return;
+    const close = (e: MouseEvent) => {
+      if (menuRef.current?.contains(e.target as Node)) return;
+      if (triggerRef.current?.contains(e.target as Node)) return;
+      setShowMenu(false);
+    };
+    window.addEventListener('mousedown', close);
+    return () => window.removeEventListener('mousedown', close);
+  }, [showMenu]);
 
   const game = useMemo(() => loadLoose(fen), [fen]);
   const whiteToMove = game.turn() === 'w';
 
   const commit = useCallback((next: string) => { onFenChange(next); }, [onFenChange]);
+  const runAndClose = (fn: () => void) => () => { fn(); setShowMenu(false); };
+
+  const copyFen = async () => {
+    try {
+      await navigator.clipboard.writeText(fen);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1200);
+    } catch { /* clipboard unavailable */ }
+  };
+
+  const pasteFen = async () => {
+    try {
+      const text = (await navigator.clipboard.readText()).trim();
+      if (text && text.split(/\s+/)[0]?.split('/').length === 8) commit(normalizeFen(text));
+    } catch { /* clipboard unavailable */ }
+  };
 
   const handleSquareClick = useCallback((square: CbSquare) => {
     if (!selectedPiece) return;
@@ -125,7 +175,7 @@ export function BoardEditor({ fen, onFenChange, orientation, onFlip, ply, maxBoa
   const blackPieces = ['p', 'n', 'b', 'r', 'q', 'k'];
 
   return (
-    <div className="space-y-2">
+    <div className="space-y-1.5">
       {/* Board with side-to-move radio overlay (top-right) */}
       <div ref={containerRef} className="relative w-full mx-auto" style={{ maxWidth: maxBoard, aspectRatio: '1 / 1' }}>
         {boardWidth > 0 && (
@@ -150,8 +200,8 @@ export function BoardEditor({ fen, onFenChange, orientation, onFlip, ply, maxBoa
         />
       </div>
 
-      {/* /board-style control row UNDER the board: ply nav (if a PGN is loaded) + flip */}
-      <div className="flex gap-0.5">
+      {/* /board-style transport row: ply nav (if a PGN is loaded) + flip + 3-dot */}
+      <div className="relative flex gap-0.5">
         {ply && (
           <>
             <button className={navBtn} onClick={() => ply.goto(0)} disabled={ply.index === 0} title="Start">⟨⟨</button>
@@ -161,19 +211,49 @@ export function BoardEditor({ fen, onFenChange, orientation, onFlip, ply, maxBoa
           </>
         )}
         <button className={navBtn} onClick={onFlip} title="Flip board">⇅</button>
-      </div>
-      {ply && (
-        <div className="text-[11px] text-zinc-500 tabular-nums text-center">
-          Ply {ply.index}/{ply.count}{ply.label && <span className="ml-1.5 font-mono text-zinc-300">{ply.label}</span>}
-        </div>
-      )}
+        <button className={navBtn} onClick={undo} title="Undo last edit">↶</button>
+        <button
+          ref={triggerRef}
+          className="flex-none grid place-items-center px-2 py-1.5 rounded-sm bg-zinc-700 hover:bg-zinc-600 text-zinc-200 transition-colors"
+          onClick={() => setShowMenu((v) => !v)}
+          title="More options"
+          aria-label="More options"
+        >
+          <HamburgerIcon />
+        </button>
 
-      {/* Compact editor tools — all inline */}
+        {showMenu && (
+          <div
+            ref={menuRef}
+            className="absolute top-full right-0 mt-1 z-50 bg-zinc-800 border border-zinc-600 rounded shadow-xl py-1 min-w-[190px] text-sm"
+          >
+            <div className={sectionLabel}>Position</div>
+            <button className={menuItem} onClick={runAndClose(copyFen)}>Copy FEN</button>
+            <button className={menuItem} onClick={runAndClose(pasteFen)}>Paste FEN</button>
+            <button className={menuItem} onClick={runAndClose(() => commit(START_FEN))}>Reset to start</button>
+            <button className={menuItem} onClick={runAndClose(() => commit(EMPTY_FEN))}>Clear board</button>
+            {onSavePosition && (
+              <>
+                <div className="my-1 border-t border-zinc-700" />
+                <div className={sectionLabel}>Practice</div>
+                <button className={menuItem} onClick={runAndClose(onSavePosition)}>
+                  <span className="inline-block w-[13px] text-center text-amber-400">★</span>
+                  Save Position to Practice
+                </button>
+              </>
+            )}
+          </div>
+        )}
+      </div>
+      <div className="flex items-center justify-between text-[11px] text-zinc-500 tabular-nums min-h-[16px]">
+        {ply
+          ? <span>Ply {ply.index}/{ply.count}{ply.label && <span className="ml-1.5 font-mono text-zinc-300">{ply.label}</span>}</span>
+          : <span />}
+        {copied && <span className="text-emerald-500/80">FEN copied</span>}
+      </div>
+
+      {/* Compact editor tools — piece palette + erase */}
       <div className="flex flex-wrap items-center gap-1.5">
-        <button className={toolBtn} onClick={undo}>Undo</button>
-        <button className={toolBtn} onClick={() => commit(START_FEN)}>Reset</button>
-        <button className={toolBtn} onClick={() => commit(EMPTY_FEN)}>Clear</button>
-        <span className="w-px h-5 bg-zinc-800 mx-0.5" />
         <div className="flex gap-1">{whitePieces.map((p) => <PieceButton key={p} piece={p} selected={selectedPiece} onSelect={(x) => setSelectedPiece(x === selectedPiece ? null : x)} />)}</div>
         <div className="flex gap-1">{blackPieces.map((p) => <PieceButton key={p} piece={p} selected={selectedPiece} onSelect={(x) => setSelectedPiece(x === selectedPiece ? null : x)} />)}</div>
         <button

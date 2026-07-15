@@ -1,13 +1,16 @@
 'use client';
 import { useState, useCallback, useRef } from 'react';
 import { analyseGame, GameReview, ReviewedMove, ReviewLogEvent } from '@/lib/analysis';
+import { loadStoredReview, saveReviewForPgn } from '@/lib/reviewStore';
 import { sanitizePgn } from '@/lib/gameTree';
+import { parsePgnHeaders } from '@/lib/pgnImport';
 
 const START_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
 
 export interface GameReviewerProgress {
+  phase:   'scan' | 'deep';
   current: number;
-  total: number;
+  total:   number;
 }
 
 export interface UseGameReviewerReturn {
@@ -26,8 +29,13 @@ export interface UseGameReviewerReturn {
   currentMove:      ReviewedMove | null;  // null at start position
   currentEval:      number;              // cp, White's perspective
 
+  // True when the current review was loaded from the library instead of a
+  // fresh engine run (enables the Re-analyse affordance).
+  fromStore:  boolean;
+
   // Actions
   loadPgn:    (pgn: string) => Promise<void>;
+  reanalyse:  () => Promise<void>;
   goToMove:   (index: number) => void;
   goForward:  () => void;
   goBack:     () => void;
@@ -39,36 +47,53 @@ export function useGameReviewer(): UseGameReviewerReturn {
   const [review, setReview]           = useState<GameReview | null>(null);
   const [isLoading, setIsLoading]     = useState(false);
   const [error, setError]             = useState<string | null>(null);
-  const [progress, setProgress]       = useState<GameReviewerProgress>({ current: 0, total: 0 });
+  const [progress, setProgress]       = useState<GameReviewerProgress>({ phase: 'scan', current: 0, total: 0 });
   const [currentMoveIndex, setCurrentMoveIndex] = useState(-1);
   const [originalPgn, setOriginalPgn] = useState<string | null>(null);
   const [headers, setHeaders]         = useState<Record<string, string>>({});
   const [logs, setLogs]               = useState<ReviewLogEvent[]>([]);
+  const [fromStore, setFromStore]     = useState(false);
 
   // Increments on every new loadPgn call so stale async results are discarded
   const analysisIdRef = useRef(0);
 
-  const loadPgn = useCallback(async (pgn: string) => {
+  const runAnalysis = useCallback(async (pgn: string, skipStore: boolean) => {
     const clean = sanitizePgn(pgn); // normalise mobile-paste quirks before parsing
     const id = ++analysisIdRef.current;
     setIsLoading(true);
     setError(null);
     setReview(null);
+    setFromStore(false);
     setOriginalPgn(clean);
-    // Parse PGN headers
-    const parsed: Record<string, string> = {};
-    for (const m of clean.matchAll(/^\[(\w+)\s+"([^"]*)"\]/gm)) parsed[m[1]] = m[2];
-    setHeaders(parsed);
+    setHeaders(parsePgnHeaders(clean));
     setCurrentMoveIndex(-1);
-    setProgress({ current: 0, total: 0 });
+    setProgress({ phase: 'scan', current: 0, total: 0 });
     setLogs([]);
+
+    // Library short-circuit: an up-to-date stored review for this exact
+    // movetext skips the engine entirely.
+    if (!skipStore) {
+      try {
+        const stored = await loadStoredReview(clean);
+        if (stored && analysisIdRef.current === id) {
+          setReview(stored.review);
+          setFromStore(true);
+          setIsLoading(false);
+          console.log(`[reviewer] loaded stored review for "${stored.game.title ?? stored.game.id}" — engine skipped`);
+          (window as unknown as { __review?: GameReview }).__review = stored.review;
+          return;
+        }
+      } catch (err) {
+        console.warn('[reviewer] stored-review lookup failed, analysing fresh:', err);
+      }
+    }
 
     try {
       const t0 = performance.now();
       const result = await analyseGame(
         clean,
-        (current, total) => {
-          if (analysisIdRef.current === id) setProgress({ current, total });
+        (p) => {
+          if (analysisIdRef.current === id) setProgress(p);
         },
         (e) => {
           if (analysisIdRef.current === id) setLogs((prev) => [...prev, e]);
@@ -81,9 +106,14 @@ export function useGameReviewer(): UseGameReviewerReturn {
         // E2E benchmark) can inspect the full review object directly.
         const secs = ((performance.now() - t0) / 1000).toFixed(1);
         const fmt = (s: GameReview['whiteSummary']) =>
-          `${s.accuracy.toFixed(1)}% (?!${s.counts.inaccuracy} ?${s.counts.mistake} ??${s.counts.blunder})`;
+          `${s.accuracy.toFixed(1)}% (?!${s.counts.inaccuracy} ?${s.counts.mistake} ×${s.counts.miss} ??${s.counts.blunder})`;
         console.log(`[reviewer] done in ${secs}s · ${result.moves.length} moves · W ${fmt(result.whiteSummary)} · B ${fmt(result.blackSummary)}`);
         (window as unknown as { __review?: GameReview }).__review = result;
+        // Persist to the library when this game lives there (fire-and-forget;
+        // a failure only costs the cache, never the on-screen review).
+        saveReviewForPgn(clean, result)
+          .then((gameId) => { if (gameId) console.log(`[reviewer] review saved to library game ${gameId}`); })
+          .catch((err) => console.warn('[reviewer] failed to persist review:', err));
       }
     } catch (err) {
       console.error('[GameReviewer] Analysis failed:', err);
@@ -94,6 +124,14 @@ export function useGameReviewer(): UseGameReviewerReturn {
       if (analysisIdRef.current === id) setIsLoading(false);
     }
   }, []);
+
+  const loadPgn = useCallback((pgn: string) => runAnalysis(pgn, false), [runAnalysis]);
+
+  // Force a fresh engine run for the currently loaded PGN (bypasses and then
+  // overwrites the stored review).
+  const reanalyse = useCallback(async () => {
+    if (originalPgn) await runAnalysis(originalPgn, true);
+  }, [originalPgn, runAnalysis]);
 
   const goToMove = useCallback((index: number) => {
     if (!review) return;
@@ -140,11 +178,13 @@ export function useGameReviewer(): UseGameReviewerReturn {
     logs,
     originalPgn,
     headers,
+    fromStore,
     currentMoveIndex,
     currentFen,
     currentMove,
     currentEval,
     loadPgn,
+    reanalyse,
     goToMove,
     goForward,
     goBack,

@@ -300,9 +300,19 @@ export async function ensureBookLoaded(): Promise<void> {
   if (_bookLoadPending) return _bookLoadPending;
   _bookLoadPending = fetch('/books/gm2600.bin')
     .then(async (r) => {
-      if (r.ok) { _bookBuf = await r.arrayBuffer(); }
+      if (r.ok) {
+        _bookBuf = await r.arrayBuffer();
+      } else if (r.status === 404) {
+        // Expected: no .bin is shipped — the ECO dataset (lib/openings.ts) is
+        // the primary book source; a polyglot file is an optional drop-in.
+        console.info('[book] no polyglot .bin at /books/gm2600.bin — ECO dataset is primary');
+      } else {
+        console.warn(`[book] polyglot fetch failed: HTTP ${r.status}`);
+      }
     })
-    .catch(() => {})
+    .catch((err) => {
+      console.warn(`[book] polyglot fetch failed: ${err?.message ?? err}`);
+    })
     .finally(() => { _bookLoaded = true; _bookLoadPending = null; });
   return _bookLoadPending;
 }

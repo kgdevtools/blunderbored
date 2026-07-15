@@ -10,17 +10,20 @@ import { Chess, DEFAULT_POSITION } from 'chess.js';
 import { Chessboard } from '@zoendev/react-chessboard';
 import type { Square as CbSquare, CustomSquareProps } from '@zoendev/react-chessboard/dist/chessboard/types/index';
 import { useGameReviewer } from '@/hooks/useGameReviewer';
-import { REVIEW_DEPTH } from '@/lib/analysis';
+import { PASS1_DEPTH, PASS2_DEPTH, PASS2_MULTIPV } from '@/lib/analysis';
 import { EvalBar } from '@/components/board/EvalBar';
 import { QUALITY_META, type MoveQuality } from '@/lib/accuracy';
 import { createRootNode, addMove, toMainLinePgn, sanitizePgn, type GameNode } from '@/lib/gameTree';
 import { extractNodeData } from '@/lib/pgnImport';
 
 // Move quality → standard PGN NAG code, for baking the reviewer's verdicts into
-// the PGN handed to the board. 'good'/'book' carry no glyph.
+// the PGN handed to the board. good/excellent/best/book/forced carry no glyph.
 const QUALITY_NAG: Partial<Record<MoveQuality, number>> = {
+  brilliant: 3,  // !!
+  great: 1,      // !
   inaccuracy: 6, // ?!
   mistake: 2,    // ?
+  miss: 2,       // ? (a missed win reads as a mistake in standard NAGs)
   blunder: 4,    // ??
 };
 
@@ -172,12 +175,17 @@ function ReviewerControls({
 
 // ── Progress bar ──────────────────────────────────────────────────────────────
 
-function ProgressBar({ current, total }: { current: number; total: number }) {
+const PHASE_LABEL: Record<'scan' | 'deep', string> = {
+  scan: 'Pass 1/2 — scanning',
+  deep: 'Pass 2/2 — deep analysis',
+};
+
+function ProgressBar({ phase, current, total }: { phase: 'scan' | 'deep'; current: number; total: number }) {
   const pct = total > 0 ? Math.round((current / total) * 100) : 0;
   return (
     <div className="space-y-1">
       <div className="flex justify-between text-xs text-zinc-400">
-        <span>Analysing move {current} / {total}</span>
+        <span>{PHASE_LABEL[phase]} · {current} / {total}</span>
         <span>{pct}%</span>
       </div>
       <div className="h-1 rounded-full bg-zinc-700 overflow-hidden">
@@ -203,7 +211,7 @@ const LOG_LEVEL_CLS: Record<ReviewLogEvent['level'], string> = {
 function AnalysisModal({
   progress, logs, onHide,
 }: {
-  progress: { current: number; total: number };
+  progress: { phase: 'scan' | 'deep'; current: number; total: number };
   logs: ReviewLogEvent[];
   onHide: () => void;
 }) {
@@ -212,7 +220,7 @@ function AnalysisModal({
     logRef.current?.scrollTo({ top: logRef.current.scrollHeight });
   }, [logs.length]);
 
-  const { current, total } = progress;
+  const { phase, current, total } = progress;
   const pct = total > 0 ? Math.round((current / total) * 100) : 0;
   // Pace + ETA from the run log's own timestamps (the last progress event).
   const last = logs[logs.length - 1];
@@ -232,6 +240,7 @@ function AnalysisModal({
       <div className="w-full max-w-md bg-zinc-900 border border-zinc-700 rounded-lg shadow-2xl flex flex-col overflow-hidden">
         <div className="px-4 pt-3 pb-2 flex items-center justify-between">
           <h3 className="text-sm font-semibold text-zinc-100">Analysing game</h3>
+          <span className="text-xs text-zinc-500">{PHASE_LABEL[phase]}</span>
           <span className="text-xs tabular-nums text-zinc-400">{pct}%</span>
         </div>
 
@@ -573,6 +582,18 @@ export function ReviewerShell({ initialPgn }: ReviewerShellProps) {
               />
             ) : (
             <>
+            {reviewer.review && reviewer.fromStore && (
+              <div className="mx-1 mb-1.5 flex items-center justify-between text-[11px] text-zinc-500">
+                <span>Loaded saved review from library</span>
+                <button
+                  onClick={() => reviewer.reanalyse()}
+                  className="px-2 py-0.5 rounded border border-zinc-700 text-zinc-300 hover:bg-zinc-800 transition-colors"
+                  title="Run a fresh engine analysis and overwrite the saved review"
+                >
+                  Re-analyse
+                </button>
+              </div>
+            )}
             {reviewer.review && <GameSummary review={reviewer.review} />}
             {reviewer.error && (
               <div className="mx-1 my-2 px-2 py-2 rounded bg-red-900/40 border border-red-700 text-xs text-red-300">
@@ -582,11 +603,12 @@ export function ReviewerShell({ initialPgn }: ReviewerShellProps) {
             {reviewer.isLoading ? (
               <div className="py-4 px-1">
                 <ProgressBar
+                  phase={reviewer.progress.phase}
                   current={reviewer.progress.current}
                   total={reviewer.progress.total}
                 />
                 <p className="text-xs text-zinc-500 mt-2">
-                  Stockfish 18 Lite — depth {REVIEW_DEPTH}
+                  Stockfish 18 Lite — scan d{PASS1_DEPTH}, deep d{PASS2_DEPTH}×{PASS2_MULTIPV}pv
                 </p>
                 {hideAnalysisModal && (
                   <button

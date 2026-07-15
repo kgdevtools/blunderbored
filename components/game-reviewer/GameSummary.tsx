@@ -2,7 +2,10 @@
 import { GameReview } from '@/lib/analysis';
 import { MoveQuality, QUALITY_META } from '@/lib/accuracy';
 
-const ALL_TIERS: MoveQuality[] = ['book', 'inaccuracy', 'mistake', 'blunder'];
+const ALL_TIERS: MoveQuality[] = [
+  'brilliant', 'great', 'excellent', 'book', 'forced',
+  'inaccuracy', 'mistake', 'miss', 'blunder',
+];
 
 interface GameSummaryProps {
   review: GameReview;
@@ -21,6 +24,12 @@ export function GameSummary({ review }: GameSummaryProps) {
 
   return (
     <div className="border border-zinc-700 rounded p-2.5 grid grid-cols-2 gap-x-4 text-sm shrink-0 mb-2">
+      {review.opening && (
+        <div className="col-span-2 mb-1.5 pb-1.5 border-b border-zinc-800 text-xs text-zinc-400 truncate">
+          <span className="font-mono text-zinc-500 mr-1.5">{review.opening.eco}</span>
+          {review.opening.name}
+        </div>
+      )}
       {sides.map(({ name, summary, best }, i) => (
         <div key={name} className={i === 1 ? 'border-l border-zinc-800 pl-4' : ''}>
           {/* Player + accuracy */}

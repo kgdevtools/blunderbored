@@ -18,6 +18,14 @@ export interface ImportedNodeData {
   nags: Map<string, number[]>;
 }
 
+// Shared PGN header-tag parser (single implementation — callers previously
+// each carried their own ad-hoc regex).
+export function parsePgnHeaders(pgn: string): Record<string, string> {
+  const headers: Record<string, string> = {};
+  for (const m of pgn.matchAll(/^\[(\w+)\s+"([^"]*)"\]/gm)) headers[m[1]] = m[2];
+  return headers;
+}
+
 // ─── Comment-token parsing ────────────────────────────────────────────────────
 
 interface ParsedComment {

@@ -14,9 +14,11 @@ import { saveGame, deriveTitle, type SaveGamePayload } from '@/lib/library';
 import { LibraryModal } from '@/components/board/LibraryModal';
 import { db, type SavedPosition } from '@/lib/db';
 import { moveAccuracy } from '@/lib/accuracy';
+import { AccuracyPerMoveChart } from '@/components/graph/AccuracyPerMoveChart';
+import { TimePerMoveChart } from '@/components/graph/TimePerMoveChart';
 import {
   toWhiteCp, evalForSide, classifySelfLoss, winPForPlayer, detectThreats, THREAT_COLORS,
-  moveNotation, CLASS_META, CUMULATIVE_FAIL_WP, classifyMoveTime, TIME_META,
+  moveNotation, CLASS_META, CUMULATIVE_FAIL_WP, classifyMoveTime,
   regressionFail, isMissedWin,
   type MoveClass, type BlunderMove,
 } from '@/lib/blunder';
@@ -31,7 +33,7 @@ import {
 const SCORING_NODES = 600_000;
 
 type Status = 'init' | 'ready' | 'player' | 'thinking' | 'failed' | 'succeeded' | 'error';
-type EndReason = 'blunder' | 'drift' | 'regression' | 'flagged' | 'target' | 'mate';
+type EndReason = 'blunder' | 'drift' | 'regression' | 'flagged' | 'target' | 'mate' | 'manual';
 type Side = 'w' | 'b';
 type Phase = 'setup' | 'playing';
 
@@ -83,6 +85,42 @@ function fmtClock(ms: number): string {
 
 // ─── Setup screen ───────────────────────────────────────────────────────────
 
+// Accordion settings card: heading + value always visible; the body height
+// animates via the grid-rows 0fr↔1fr trick (no JS measurement needed).
+function SettingsCard({ label, value, open, disabled, onSelect, children }: {
+  label: string;
+  value: React.ReactNode;
+  open: boolean;
+  disabled?: boolean;
+  onSelect: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <div
+      className={[
+        'rounded-sm border transition-colors',
+        open ? 'border-zinc-600 bg-zinc-900' : 'border-zinc-800 bg-zinc-900/50',
+        disabled ? 'opacity-50' : '',
+      ].join(' ')}
+    >
+      <button
+        type="button"
+        onClick={onSelect}
+        disabled={disabled}
+        className="w-full flex items-center justify-between gap-2 px-2.5 py-2 text-left disabled:cursor-not-allowed"
+      >
+        <span className="text-[11px] uppercase tracking-wide text-zinc-500">{label}</span>
+        <span className="text-sm font-bold tabular-nums text-zinc-200 whitespace-nowrap">{value}</span>
+      </button>
+      <div className={`grid transition-[grid-template-rows] duration-300 ease-out ${open ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
+        <div className="overflow-hidden min-h-0">
+          <div className="px-2.5 pb-2">{children}</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // A FEN's first token is the piece placement: 8 ranks joined by '/'. Anything
 // else (move text, headers) we treat as PGN.
 function looksLikeFen(text: string): boolean {
@@ -90,7 +128,10 @@ function looksLikeFen(text: string): boolean {
   return first.split('/').length === 8;
 }
 
-type SourceTab = 'position' | 'pgn' | 'library';
+type SourceTab = 'position' | 'pgn' | 'library' | 'saved';
+
+// Opponent rating forced while "play to the end" is on (expert conversion test).
+const TO_END_RATING = 2200;
 
 function SetupScreen({ onStart, initialPositionId }: { onStart: (cfg: Config) => void; initialPositionId?: string }) {
   const [side, setSide] = useState<Side>('w');
@@ -103,6 +144,10 @@ function SetupScreen({ onStart, initialPositionId }: { onStart: (cfg: Config) =>
   const [target, setTarget] = useState(5);
   const [toEnd, setToEnd] = useState(false);
   const [ratingElo, setRatingElo] = useState(1600);
+  // Accordion pair: which settings card is expanded (both stay active).
+  const [openCard, setOpenCard] = useState<'survive' | 'rating'>('survive');
+  // The rating the user had chosen before "play to the end" forced TO_END_RATING.
+  const preToEndRating = useRef(1600);
   const [clockMin, setClockMin] = useState(5);
   const [clockCustom, setClockCustom] = useState(false);
   const [incS, setIncS] = useState(2);
@@ -220,21 +265,21 @@ function SetupScreen({ onStart, initialPositionId }: { onStart: (cfg: Config) =>
   const labelCls = 'text-[11px] uppercase tracking-wide text-zinc-500 mb-1.5';
 
   return (
-    <div className="w-full max-w-3xl mx-auto p-4">
-      <div className="mb-5">
+    <div className="w-full p-3 sm:p-4">
+      <div className="mb-4">
         <h1 className="text-2xl font-bold tracking-tight">Blunderable</h1>
-        <p className="text-zinc-500 text-sm mt-1">Who blunders first? Survive the engine without throwing the position.</p>
+        <p className="text-zinc-500 text-sm mt-0.5">Practice set positions with Stockfish — try to survive or convert an advantage.</p>
       </div>
 
-      <div className="grid lg:grid-cols-2 gap-6 lg:gap-8 items-start">
+      <div className="grid lg:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)] gap-4 lg:gap-6 items-start">
         {/* Left: board + position input */}
-        <div className="space-y-3">
-          <BoardEditor fen={fen} onFenChange={onBoardFen} orientation={orientation} onFlip={() => setOrientation((o) => (o === 'white' ? 'black' : 'white'))} ply={plyNav} maxBoard={460} />
+        <div className="space-y-2.5">
+          <BoardEditor fen={fen} onFenChange={onBoardFen} orientation={orientation} onFlip={() => setOrientation((o) => (o === 'white' ? 'black' : 'white'))} ply={plyNav} maxBoard={640} onSavePosition={() => setShowSave(true)} />
 
           {/* Source tabs: where the starting position comes from */}
           <div>
             <div className="flex items-center gap-1 mb-1.5">
-              {(['position', 'pgn', 'library'] as const).map((t) => (
+              {(['position', 'pgn', 'library', 'saved'] as const).map((t) => (
                 <button
                   key={t}
                   onClick={() => setSourceTab(t)}
@@ -299,11 +344,13 @@ function SetupScreen({ onStart, initialPositionId }: { onStart: (cfg: Config) =>
                   : <span className="text-[10px] text-zinc-600">Pick a saved game to practise from</span>}
               </div>
             )}
+
+            {sourceTab === 'saved' && <SavedPositionsList onLoad={loadPosition} />}
           </div>
         </div>
 
         {/* Right: challenge settings */}
-        <div className="space-y-5">
+        <div className="space-y-3.5">
           <div>
             <div className={labelCls}>Play as</div>
             <div className="flex gap-2">
@@ -313,28 +360,50 @@ function SetupScreen({ onStart, initialPositionId }: { onStart: (cfg: Config) =>
             </div>
           </div>
 
+          {/* Survive / Opponent rating — accordion pair. Both settings always
+              apply; selecting a card expands its slider and collapses the other
+              to heading + value. "Play to the end" collapses both and forces
+              the expert rating (restored on untick). */}
           <div>
-            <div className="flex items-center justify-between mb-1.5">
-              <span className="text-[11px] uppercase tracking-wide text-zinc-500">Survive</span>
-              <span className="text-sm font-bold tabular-nums text-zinc-200">{toEnd ? '∞' : target} <span className="text-[10px] font-normal text-zinc-500">{toEnd ? 'to the end' : 'moves'}</span></span>
+            <div className="grid grid-cols-2 gap-2">
+              <SettingsCard
+                label="Survive"
+                value={<>{toEnd ? '∞' : target} <span className="text-[10px] font-normal text-zinc-500">{toEnd ? 'to the end' : 'moves'}</span></>}
+                open={!toEnd && openCard === 'survive'}
+                disabled={toEnd}
+                onSelect={() => setOpenCard('survive')}
+              >
+                <input type="range" min={TARGET_MIN} max={TARGET_MAX} step={1} value={target} disabled={toEnd} onChange={(e) => setTarget(Number(e.target.value))} className="w-full accent-indigo-500 disabled:opacity-40" />
+                <p className="text-[10px] text-zinc-600 mt-1 leading-snug">
+                  Fails on: a single blunder · steady decline over your last 4 moves · 20% total ground given up.
+                </p>
+              </SettingsCard>
+              <SettingsCard
+                label="Opponent rating"
+                value={<>{ratingElo} <span className="text-[10px] font-normal text-zinc-500">{ratingLabel(ratingElo)}</span></>}
+                open={!toEnd && openCard === 'rating'}
+                disabled={toEnd}
+                onSelect={() => setOpenCard('rating')}
+              >
+                <input type="range" min={RATING_MIN} max={RATING_MAX} step={50} value={ratingElo} onChange={(e) => setRatingElo(Number(e.target.value))} className="w-full accent-indigo-500" />
+                <p className="text-[10px] text-zinc-600 mt-1">{ratingStyle(ratingElo)}</p>
+              </SettingsCard>
             </div>
-            <input type="range" min={TARGET_MIN} max={TARGET_MAX} step={1} value={target} disabled={toEnd} onChange={(e) => setTarget(Number(e.target.value))} className="w-full accent-indigo-500 disabled:opacity-40" />
-            <label className="flex items-center gap-1.5 mt-1 text-[11px] text-zinc-400 cursor-pointer select-none">
-              <input type="checkbox" checked={toEnd} onChange={(e) => setToEnd(e.target.checked)} className="accent-indigo-500" />
+            <label className="flex items-center gap-1.5 mt-1.5 text-[11px] text-zinc-400 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={toEnd}
+                onChange={(e) => {
+                  const on = e.target.checked;
+                  setToEnd(on);
+                  if (on) { preToEndRating.current = ratingElo; setRatingElo(TO_END_RATING); }
+                  else setRatingElo(preToEndRating.current);
+                }}
+                className="accent-indigo-500"
+              />
               Play to the end (mate, draw, or bust)
+              {toEnd && <span className="text-[10px] text-zinc-600">— opponent set to {TO_END_RATING}</span>}
             </label>
-            <p className="text-[10px] text-zinc-600 mt-1 leading-snug">
-              Fails on: a single blunder · steady decline over your last 4 moves · 20% total ground given up.
-            </p>
-          </div>
-
-          <div>
-            <div className="flex items-center justify-between mb-1.5">
-              <span className="text-[11px] uppercase tracking-wide text-zinc-500">Opponent rating</span>
-              <span className="text-sm font-bold tabular-nums text-zinc-200">{ratingElo} <span className="text-[10px] font-normal text-zinc-500">{ratingLabel(ratingElo)}</span></span>
-            </div>
-            <input type="range" min={RATING_MIN} max={RATING_MAX} step={50} value={ratingElo} onChange={(e) => setRatingElo(Number(e.target.value))} className="w-full accent-indigo-500" />
-            <p className="text-[10px] text-zinc-600 mt-1">{ratingStyle(ratingElo)}</p>
           </div>
 
           <div className="flex gap-3">
@@ -377,7 +446,6 @@ function SetupScreen({ onStart, initialPositionId }: { onStart: (cfg: Config) =>
             <button onClick={() => setShowSave(true)} title="Save this position to practice later" className="px-3 py-2.5 rounded-sm bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-sm font-semibold">★ Save</button>
           </div>
 
-          <SavedPositionsList onLoad={loadPosition} />
           <RecentChallenges />
         </div>
       </div>
@@ -818,6 +886,37 @@ function PlayingScreen({ config, onQuit, onRematch }: { config: Config; onQuit: 
   const ended = status === 'failed' || status === 'succeeded';
   const running = status === 'player' || status === 'thinking';
 
+  // ── Post-game review: a ply cursor over the finished game. null = live view
+  // (final position). Cursor c shows fenHistory[c]; the ply at index c-1 is
+  // "active" in the moves list. ──
+  const [reviewCursor, setReviewCursor] = useState<number | null>(null);
+  const fenHistory = useMemo(() => {
+    if (!ended) return [] as string[];
+    // Replay from plies state (kept in sync by syncPlies) — no ref reads in render.
+    try {
+      const c = new Chess(fen);
+      const fens = [c.fen()];
+      for (const p of plies) { c.move(p.san); fens.push(c.fen()); }
+      return fens;
+    } catch { return [] as string[]; }
+  }, [ended, fen, plies]);
+  const gotoReview = useCallback((cursor: number) => {
+    setReviewCursor(Math.max(0, Math.min(fenHistory.length - 1, cursor)));
+  }, [fenHistory.length]);
+  useEffect(() => {
+    if (!ended || reviewCursor == null) return;
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return;
+      if (e.key === 'ArrowLeft') { e.preventDefault(); gotoReview((reviewCursor ?? 0) - 1); }
+      else if (e.key === 'ArrowRight') { e.preventDefault(); gotoReview((reviewCursor ?? 0) + 1); }
+      else if (e.key === 'Home') { e.preventDefault(); gotoReview(0); }
+      else if (e.key === 'End') { e.preventDefault(); gotoReview(fenHistory.length - 1); }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [ended, reviewCursor, gotoReview, fenHistory.length]);
+
   // Keep the screen awake while the clock runs (PWA on a phone would otherwise
   // sleep mid-game). Best-effort: unsupported browsers just skip it.
   useEffect(() => {
@@ -856,10 +955,16 @@ function PlayingScreen({ config, onQuit, onRematch }: { config: Config; onQuit: 
     }
   }, [ended, status, side, fen, target, toEnd, moves, ratingElo, clockInitialMs, clockIncMs, endReason, savedPositionId]);
 
-  // On fail, freeze the board and surface threats as arrows.
+  // Review cursor overrides the live (final) position once the game has ended.
+  const atFinal = reviewCursor == null || reviewCursor === fenHistory.length - 1;
+  const displayFen = ended && reviewCursor != null && fenHistory[reviewCursor]
+    ? fenHistory[reviewCursor]
+    : position;
+
+  // On fail, freeze the board and surface threats as arrows (final position only).
   const threatArrows = useMemo(
-    () => (status === 'failed' ? detectThreats(position).map((t) => [t.from, t.to, t.color] as [CbSquare, CbSquare, string]) : []),
-    [status, position],
+    () => (status === 'failed' && atFinal ? detectThreats(position).map((t) => [t.from, t.to, t.color] as [CbSquare, CbSquare, string]) : []),
+    [status, position, atFinal],
   );
 
   // Legal-move highlights (click + drag).
@@ -890,7 +995,7 @@ function PlayingScreen({ config, onQuit, onRematch }: { config: Config; onQuit: 
           <div ref={containerRef} className="w-full" style={{ aspectRatio: '1 / 1' }}>
             {boardWidth > 0 && (
               <Chessboard
-                position={position}
+                position={displayFen}
                 boardWidth={boardWidth}
                 boardOrientation={orientation}
                 onPieceDrop={applyPlayerMove}
@@ -909,8 +1014,10 @@ function PlayingScreen({ config, onQuit, onRematch }: { config: Config; onQuit: 
           className="w-full lg:flex-1 lg:min-w-[240px] bg-zinc-900 rounded-md flex flex-col lg:overflow-hidden"
           style={isDesktop && boardWidth > 0 ? { height: boardWidth } : undefined}
         >
-          {/* Clocks + status (top): opponent strip above your clock, /board-compact */}
-          <div className="shrink-0 px-3 pt-2 lg:order-1">
+          {/* Clocks + status: opponent strip above your clock, /board-compact.
+              Mobile order puts the controls row directly under the board so
+              board + controls share the viewport; clocks follow. */}
+          <div className="shrink-0 px-3 pt-2 order-2 lg:order-1">
             <div className="flex items-center justify-between px-1">
               <span className="text-[11px] text-zinc-500 flex items-center gap-1.5">
                 {status === 'thinking' && <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-pulse" />}
@@ -957,11 +1064,50 @@ function PlayingScreen({ config, onQuit, onRematch }: { config: Config; onQuit: 
             )}
           </div>
 
-          {/* Moves list — fills the panel, own scroll (order-2) */}
-          <GameMovesList plies={plies} side={side} mode="live" heightClass="max-h-[40vh] lg:max-h-none" className="px-3 py-1 lg:flex-1 lg:min-h-0 lg:order-2" autoScroll />
+          {/* Pre-start footing: the one moment eval is shown before the run —
+              large, colour-coded, gone the instant play begins (blind play). */}
+          {status === 'ready' && (
+            <div className="shrink-0 px-3 pb-1 order-3 lg:order-2">
+              <StartFooting cp={e0Cp} side={side} />
+            </div>
+          )}
 
-          {/* Controls (bottom) — flip + quit/new (order-3) */}
-          <div className="shrink-0 flex gap-0.5 p-1.5 lg:order-3">
+          {/* Moves list — fills the panel, own scroll (order-2). After the game
+              ends it becomes a review scoresheet: glyphs, evals, time bars,
+              click-to-jump. */}
+          <GameMovesList
+            plies={plies}
+            side={side}
+            mode={ended ? 'report' : 'live'}
+            moves={ended ? moves : undefined}
+            clockInitialMs={clockInitialMs}
+            heightClass="max-h-[40vh] lg:max-h-none"
+            className="px-3 py-1 lg:flex-1 lg:min-h-0 order-4 lg:order-2"
+            autoScroll={!ended}
+            activePly={ended && reviewCursor != null ? reviewCursor - 1 : null}
+            onSelectPly={ended ? (i) => gotoReview(i + 1) : undefined}
+          />
+
+          {/* Controls (bottom): review transport once ended, End & Report while
+              playing to the end, flip + quit always (order-3) */}
+          <div className="shrink-0 flex gap-0.5 p-1.5 order-1 lg:order-3">
+            {ended && fenHistory.length > 1 && (
+              <>
+                <button onClick={() => gotoReview(0)} disabled={reviewCursor === 0} className={reviewBtn} title="Start (Home)">⟨⟨</button>
+                <button onClick={() => gotoReview((reviewCursor ?? fenHistory.length - 1) - 1)} disabled={reviewCursor === 0} className={reviewBtn} title="Previous (←)">⟨</button>
+                <button onClick={() => gotoReview((reviewCursor ?? fenHistory.length - 1) + 1)} disabled={atFinal} className={reviewBtn} title="Next (→)">⟩</button>
+                <button onClick={() => gotoReview(fenHistory.length - 1)} disabled={atFinal} className={reviewBtn} title="End (End)">⟩⟩</button>
+              </>
+            )}
+            {running && toEnd && (
+              <button
+                onClick={() => resolveEnd('succeeded', 'manual')}
+                className="flex-1 py-1.5 rounded-sm bg-indigo-700 hover:bg-indigo-600 text-white text-sm font-semibold transition-colors"
+                title="Stop here and see the full report"
+              >
+                End & Report
+              </button>
+            )}
             <button onClick={() => setOrientation((o) => (o === 'white' ? 'black' : 'white'))} className="flex-1 py-1.5 rounded-sm bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-sm transition-colors" title="Flip board">⇅ Flip</button>
             <button onClick={onQuit} className="flex-1 py-1.5 rounded-sm bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-sm transition-colors">{ended ? 'New challenge' : 'Quit'}</button>
           </div>
@@ -974,8 +1120,32 @@ function PlayingScreen({ config, onQuit, onRematch }: { config: Config; onQuit: 
           e0Cp={e0Cp} cumulativeWp={cumulativeWp} ratingElo={ratingElo} target={target} toEnd={toEnd} survived={playerMoves}
           clockInitialMs={clockInitialMs} clockIncMs={clockIncMs} startFen={fen} getPgn={getPgn}
           onClose={() => setSummaryDismissed(true)} onNewChallenge={onQuit} onRematch={onRematch}
+          onReview={() => { setSummaryDismissed(true); gotoReview(0); }}
         />
       )}
+    </div>
+  );
+}
+
+const reviewBtn = 'flex-1 py-1.5 rounded-sm bg-zinc-700 hover:bg-zinc-600 disabled:opacity-30 disabled:cursor-not-allowed text-zinc-200 text-sm transition-colors';
+
+// ── Pre-start footing banner: the starting eval, player-POV, large and
+// colour-coded. Rendered only while status === 'ready'. ──
+function StartFooting({ cp, side }: { cp: number; side: Side }) {
+  const [word, cls] =
+    cp >= 150 ? ['You start winning', 'text-emerald-400'] :
+    cp >= 40 ? ['You start better', 'text-teal-300'] :
+    cp > -40 ? ['Even footing', 'text-zinc-200'] :
+    cp > -150 ? ['You start worse', 'text-amber-400'] :
+    ['You start losing', 'text-red-400'];
+  const signed = `${cp >= 0 ? '+' : '−'}${Math.abs(cp / 100).toFixed(1)}`;
+  return (
+    <div className="rounded-sm border border-zinc-800 bg-zinc-950/60 px-3 py-2 flex items-baseline justify-between gap-2">
+      <span className={`text-2xl font-bold tabular-nums font-mono ${cls}`}>{signed}</span>
+      <span className="text-[11px] text-zinc-500 text-right leading-tight">
+        {word} as {side === 'w' ? 'White' : 'Black'}
+        <span className="block text-zinc-600">eval hides once you start</span>
+      </span>
     </div>
   );
 }
@@ -990,51 +1160,6 @@ function PlayerClock({ ms, dimmed = false }: { ms: number; dimmed?: boolean }) {
   );
 }
 
-// Move-time chart with x/y axes: one bar per move (height ∝ seconds, tinted by
-// time band), a dot above sub-par moves, y-axis seconds and x-axis move numbers.
-function MoveTimesChart({ moves, clockInitialMs }: { moves: BlunderMove[]; clockInitialMs: number }) {
-  if (moves.length === 0) return null;
-  const maxMs = Math.max(...moves.map((m) => m.clockMs), 1);
-  const maxS = maxMs / 1000;
-  const H = 80;
-  return (
-    <div>
-      <div className="text-[9px] uppercase tracking-wide text-zinc-500 mb-1">Time per move</div>
-      <div className="flex">
-        {/* Y axis (seconds) */}
-        <div className="flex flex-col justify-between text-[8px] tabular-nums text-zinc-600 pr-1.5 text-right" style={{ height: H }}>
-          <span>{maxS.toFixed(maxS >= 10 ? 0 : 1)}s</span>
-          <span>{(maxS / 2).toFixed(maxS >= 10 ? 0 : 1)}s</span>
-          <span>0</span>
-        </div>
-        <div className="flex-1 min-w-0">
-          <div className="relative flex items-end gap-1 border-l border-b border-zinc-700/70" style={{ height: H }}>
-            <span className="absolute left-0 right-0 border-t border-dashed border-zinc-800" style={{ bottom: H / 2 }} />
-            {moves.map((m, i) => {
-              const tcls = classifyMoveTime(m.clockMs, clockInitialMs);
-              const h = Math.max(2, Math.round((m.clockMs / maxMs) * (H - 4)));
-              return (
-                <div key={i} className="flex-1 flex flex-col justify-end items-center min-w-0" title={`${m.notation} · ${(m.clockMs / 1000).toFixed(1)}s`}>
-                  {m.cls !== 'ok' && <span className="w-1 h-1 rounded-full mb-0.5" style={{ background: CLASS_META[m.cls].color }} />}
-                  <div className="w-full rounded-t-sm" style={{ height: h, background: TIME_META[tcls].color, opacity: tcls === 'quick' ? 0.45 : 1 }} />
-                </div>
-              );
-            })}
-          </div>
-          {/* X axis (move numbers) */}
-          <div className="flex gap-1 mt-0.5 pl-px">
-            {moves.map((m, i) => {
-              const num = (m.notation.split(/[.…]/)[0] ?? '').trim();
-              const show = moves.length <= 8 || i % 2 === 0;
-              return <div key={i} className="flex-1 text-center text-[8px] tabular-nums text-zinc-600 min-w-0 truncate">{show ? num : ''}</div>;
-            })}
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 const REASON_TEXT: Record<EndReason, string> = {
   blunder: 'A blunder ended the run — check the board for the threats.',
   drift: 'Too much ground given up over the run — death by a thousand cuts.',
@@ -1042,6 +1167,7 @@ const REASON_TEXT: Record<EndReason, string> = {
   flagged: 'The clock ran out.',
   target: 'You held the position to the target.',
   mate: 'Checkmate.',
+  manual: 'You ended the run for a review.',
 };
 
 // Quality line: avg self-inflicted centipawn loss → a rough playing-level band,
@@ -1097,18 +1223,16 @@ function CloseX({ onClick }: { onClick: () => void }) {
   );
 }
 
-function SummaryModal({ status, moves, plies, side, endReason, e0Cp, cumulativeWp, ratingElo, target, toEnd, survived, clockInitialMs, clockIncMs, startFen, getPgn, onClose, onNewChallenge, onRematch }: {
+function SummaryModal({ status, moves, plies, side, endReason, e0Cp, cumulativeWp, ratingElo, target, toEnd, survived, clockInitialMs, clockIncMs, startFen, getPgn, onClose, onNewChallenge, onRematch, onReview }: {
   status: Status; moves: BlunderMove[]; plies: Ply[]; side: Side; endReason: EndReason | null;
   e0Cp: number; cumulativeWp: number; ratingElo: number; target: number; toEnd?: boolean; survived: number; clockInitialMs: number;
   clockIncMs: number; startFen: string; getPgn: () => string; onClose: () => void; onNewChallenge: () => void;
-  onRematch: () => void;
+  onRematch: () => void; onReview: () => void;
 }) {
   const succeeded = status === 'succeeded';
   const [showSave, setShowSave] = useState(false);
   const [showLibSave, setShowLibSave] = useState(false);
   const [savedMsg, setSavedMsg] = useState<string | null>(null);
-  const counts = { blunder: 0, mistake: 0, inaccuracy: 0, ok: 0 } as Record<MoveClass, number>;
-  for (const m of moves) counts[m.cls]++;
   const accs = moves.map((m) => moveAccuracy(m.wpLoss ?? 0, 0));
   const accuracy = accs.length ? Math.round(accs.reduce((s, v) => s + v, 0) / accs.length) : 100;
   const endEvalCp = moves.length ? (moves[moves.length - 1].engineEvalCp ?? moves[moves.length - 1].evalCp ?? e0Cp) : e0Cp;
@@ -1135,7 +1259,6 @@ function SummaryModal({ status, moves, plies, side, endReason, e0Cp, cumulativeW
   const studyMoves = moves.filter((m) =>
     m.cls !== 'ok' && ['struggling', 'study'].includes(classifyMoveTime(m.clockMs, clockInitialMs)),
   ).slice(0, 3);
-  const badClasses = (['blunder', 'mistake', 'inaccuracy'] as MoveClass[]).filter((c) => counts[c] > 0);
 
   const downloadPgn = () => {
     const pgn = getPgn();
@@ -1258,10 +1381,11 @@ function SummaryModal({ status, moves, plies, side, endReason, e0Cp, cumulativeW
           )}
 
           {/* Primary stats */}
-          <div className="grid grid-cols-3 gap-x-2 gap-y-3">
+          <div className="grid grid-cols-4 gap-x-2 gap-y-3">
             <Stat label="Accuracy" value={`${accuracy}%`} color={accColor} />
             <Stat label="Survived" value={toEnd ? `${survived}` : `${survived}/${target}`} />
             <Stat label="Opponent" value={`${ratingElo}`} />
+            <Stat label="Time" value={`${totalTimeS.toFixed(0)}s`} />
           </div>
 
           {/* Quality line — only with a meaningful sample (≥8 moves) */}
@@ -1274,19 +1398,41 @@ function SummaryModal({ status, moves, plies, side, endReason, e0Cp, cumulativeW
             </p>
           )}
 
-          {/* Secondary, muted */}
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-zinc-500">
-            {badClasses.map((c) => (
-              <span key={c} className="flex items-center gap-1">
-                <span className="tabular-nums font-semibold" style={{ color: CLASS_META[c].color }}>{counts[c]}</span>
-                <span>{CLASS_META[c].label.toLowerCase()}{counts[c] === 1 ? '' : 's'}</span>
-              </span>
-            ))}
-            <span className="tabular-nums">{cumulativeWp.toFixed(0)}% win lost</span>
-            <span className="tabular-nums">{totalTimeS.toFixed(0)}s{moves.length ? ` · ${(totalTimeS / moves.length).toFixed(1)}s/mv` : ''}</span>
-          </div>
+          {/* Accuracy per move — your line only, class-coloured dots on the slips */}
+          {moves.length >= 2 && (
+            <div>
+              <div className="text-[9px] uppercase tracking-wide text-zinc-500 mb-1">Accuracy per move</div>
+              <AccuracyPerMoveChart
+                series={[{
+                  label: 'You',
+                  color: '#d4d4d8',
+                  points: moves.map((m, k) => ({
+                    index: k,
+                    acc: moveAccuracy(m.wpLoss ?? 0, 0),
+                    dotHex: m.cls !== 'ok' ? CLASS_META[m.cls].color : null,
+                    label: `${m.notation}${CLASS_META[m.cls].glyph ? ` ${CLASS_META[m.cls].glyph}` : ''} — ${moveAccuracy(m.wpLoss ?? 0, 0).toFixed(0)}%`,
+                  })),
+                }]}
+                maxIndex={Math.max(1, moves.length - 1)}
+              />
+            </div>
+          )}
 
-          <MoveTimesChart moves={moves} clockInitialMs={clockInitialMs} />
+          {/* Time per move */}
+          {moves.length >= 2 && (
+            <div>
+              <div className="text-[9px] uppercase tracking-wide text-zinc-500 mb-1">Time per move</div>
+              <TimePerMoveChart
+                bars={moves.map((m, k) => ({
+                  index: k,
+                  seconds: m.clockMs / 1000,
+                  side: 'w' as const,
+                  label: `${m.notation} — ${(m.clockMs / 1000).toFixed(1)}s`,
+                }))}
+                maxIndex={Math.max(1, moves.length - 1)}
+              />
+            </div>
+          )}
 
           {/* Moves list — PGN scoresheet with quality, eval & time bars */}
           <div>
@@ -1303,6 +1449,7 @@ function SummaryModal({ status, moves, plies, side, endReason, e0Cp, cumulativeW
             <p className={`text-[11px] font-semibold ${savedMsg.includes('failed') ? 'text-red-400' : 'text-emerald-400'}`}>{savedMsg}</p>
           )}
           <div className="flex gap-2">
+            <button onClick={onReview} className="px-3 py-2 rounded-sm bg-indigo-700 hover:bg-indigo-600 text-white text-xs font-semibold" title="Step through the game move by move — glyphs, evals and times on the scoresheet">▦ Review</button>
             <button onClick={() => setShowSave(true)} className="px-3 py-2 rounded-sm bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-semibold" title="Save this position to practice later">★ Position</button>
             <button onClick={() => setShowLibSave(true)} className="px-3 py-2 rounded-sm bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-semibold" title="Save the played game to your library">＋ Library</button>
             <button onClick={onRematch} className="px-3 py-2 rounded-sm bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-semibold" title="Same position, same settings, fresh run">↺ Rematch</button>

@@ -144,7 +144,7 @@ export interface ChallengeReport {
   ratingElo?: number | null;     // opponent strength (null = full strength)
   clockInitialMs?: number;       // per-side starting time
   clockIncMs?: number;           // increment per move
-  endReason?: 'blunder' | 'drift' | 'regression' | 'flagged' | 'target' | 'mate';
+  endReason?: 'blunder' | 'drift' | 'regression' | 'flagged' | 'target' | 'mate' | 'manual';
   cumulativeWp?: number;         // total self-inflicted win% loss
   toEnd?: boolean;               // run was "play to the end" (target ignored)
 }

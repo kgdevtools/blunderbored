@@ -1,8 +1,13 @@
-// Unit tests for the reviewer's pure math layer (lib/accuracy.ts).
+// Unit tests for the reviewer's pure math layer (lib/accuracy.ts) and the
+// full-tier classifier (lib/classification.ts).
 // Run: node scripts/review-heuristics.test.mjs   (Node ≥23 strips TS types natively)
 import {
-  winP, moveAccuracy, winPctLossForSide, classifyQuality, computeGameAccuracy,
+  winP, moveAccuracy, winPctLossForSide, classifyQuality, CLASSIFY,
 } from '../lib/accuracy.ts';
+import {
+  classifyMove, selectCriticals, detectSacrifice, countLegalMoves, classifyPhase,
+  CRITICAL_SWING_CP,
+} from '../lib/classification.ts';
 
 let pass = 0, fail = 0;
 const check = (label, actual, expected) => {
@@ -42,26 +47,116 @@ check('never negative', moveAccuracy(100, -50) >= 0, true);
   check('black blunder positive', b2.winPctLoss > 0, true);
 }
 
-// ── classifyQuality: threshold boundaries (10 / 20 / 30) ─────────────────────
-check('9.99 → good', classifyQuality(9.99), 'good');
-check('10 → inaccuracy', classifyQuality(10), 'inaccuracy');
-check('19.99 → inaccuracy', classifyQuality(19.99), 'inaccuracy');
-check('20 → mistake', classifyQuality(20), 'mistake');
-check('29.99 → mistake', classifyQuality(29.99), 'mistake');
-check('30 → blunder', classifyQuality(30), 'blunder');
+// ── classifyQuality: recalibrated boundaries (5 / 10 / 15) ───────────────────
+// Lichess judgments are 0.1/0.2/0.3 on its −1..+1 winning-chances scale =
+// 5/10/15 points on the 0–100 winP scale (the old 10/20/30 was a 2× error;
+// verified against a lichess server review 2026-07-14: 13/16 exact matches).
+check('4.99 → good', classifyQuality(4.99), 'good');
+check('5 → inaccuracy', classifyQuality(5), 'inaccuracy');
+check('9.99 → inaccuracy', classifyQuality(9.99), 'inaccuracy');
+check('10 → mistake', classifyQuality(10), 'mistake');
+check('14.99 → mistake', classifyQuality(14.99), 'mistake');
+check('15 → blunder', classifyQuality(15), 'blunder');
 check('0 → good', classifyQuality(0), 'good');
 
-// ── computeGameAccuracy: book exclusion + empty side ─────────────────────────
+// ── classifyMove: overlay tiers, precedence first-match-wins ─────────────────
+const base = {
+  winPctLoss: 0, wpBefore: 50, wpAfter: 50, playedIsBest: false, isBook: false,
+  legalMoveCount: 30, missedMate: false, isSacrifice: false,
+};
+// forced
+check('1 legal move → forced', classifyMove({ ...base, legalMoveCount: 1 }), 'forced');
+check('single non-losing move → forced',
+  classifyMove({ ...base, playedIsBest: true, line1Wp: 50, line2Wp: 10 }), 'forced');
+check('alt at 10.01 wp → not forced (great)',
+  classifyMove({ ...base, playedIsBest: true, line1Wp: 50, line2Wp: 10.01 }), 'great');
+check('gap 24.99 → not forced',
+  classifyMove({ ...base, playedIsBest: true, line1Wp: 34.99, line2Wp: 10 }), 'great');
+// book
+check('book move → book', classifyMove({ ...base, isBook: true }), 'book');
+check('forced beats book', classifyMove({ ...base, isBook: true, legalMoveCount: 1 }), 'forced');
+// brilliant
+const brill = { ...base, playedIsBest: true, isSacrifice: true, wpBefore: 60, wpAfter: 62 };
+check('sound sacrifice → brilliant', classifyMove(brill), 'brilliant');
+check('losing after sac → not brilliant', classifyMove({ ...brill, wpAfter: 44.9 }) === 'brilliant', false);
+check('already winning → not brilliant', classifyMove({ ...brill, wpBefore: 90.1 }) === 'brilliant', false);
+check('sac but not best → not brilliant', classifyMove({ ...brill, playedIsBest: false }) === 'brilliant', false);
+// great / best
+check('only good move → great',
+  classifyMove({ ...base, playedIsBest: true, line1Wp: 55, line2Wp: 43 }), 'great');
+check('gap 11.99 → best not great',
+  classifyMove({ ...base, playedIsBest: true, line1Wp: 55, line2Wp: 43.01 }), 'best');
+check('top move without MultiPV → best', classifyMove({ ...base, playedIsBest: true }), 'best');
+// miss
+check('mistake while winning → miss',
+  classifyMove({ ...base, winPctLoss: 12, wpBefore: 72 }), 'miss');
+check('inaccuracy with missed mate → miss',
+  classifyMove({ ...base, winPctLoss: 6, wpBefore: 60, missedMate: true }), 'miss');
+check('mistake while equal → mistake',
+  classifyMove({ ...base, winPctLoss: 12, wpBefore: 55 }), 'mistake');
+check('blunder while winning stays blunder',
+  classifyMove({ ...base, winPctLoss: 40, wpBefore: 90 }), 'blunder');
+// base + excellent
+check('wpl 1 not-best → excellent', classifyMove({ ...base, winPctLoss: 1 }), 'excellent');
+check('wpl 1.01 → good', classifyMove({ ...base, winPctLoss: 1.01 }), 'good');
+check('wpl 7 → inaccuracy', classifyMove({ ...base, winPctLoss: 7 }), 'inaccuracy');
+check('wpl 20 → blunder', classifyMove({ ...base, winPctLoss: 20 }), 'blunder');
+
+// ── selectCriticals ──────────────────────────────────────────────────────────
 {
-  const ms = [
-    { moveAccuracy: 100, isBook: true,  color: 'w' },
-    { moveAccuracy: 80,  isBook: false, color: 'w' },
-    { moveAccuracy: 60,  isBook: false, color: 'w' },
-    { moveAccuracy: 10,  isBook: false, color: 'b' },
+  const quiet = {
+    provisional: 'good', mateInvolved: false, playedIsBest: false,
+    swingCp: 20, sacrificeCandidate: false, unscored: false,
+  };
+  const list = [
+    quiet,                                            // 0: skipped
+    { ...quiet, provisional: 'mistake' },             // 1
+    { ...quiet, mateInvolved: true },                 // 2
+    { ...quiet, playedIsBest: true },                 // 3
+    { ...quiet, swingCp: CRITICAL_SWING_CP },         // 4
+    { ...quiet, sacrificeCandidate: true },           // 5
+    { ...quiet, unscored: true },                     // 6
+    { ...quiet, swingCp: CRITICAL_SWING_CP - 1 },     // 7: skipped
   ];
-  check('book excluded from mean', computeGameAccuracy(ms, 'w'), 70);
-  check('all-book side → 100', computeGameAccuracy([{ moveAccuracy: 0, isBook: true, color: 'b' }], 'b'), 100);
+  check('criticals picked', selectCriticals(list).join(','), '1,2,3,4,5,6');
 }
+
+// ── detectSacrifice (SEE-lite over PV) ───────────────────────────────────────
+{
+  // Greek gift: Bxh7+ Kxh7 — bishop gone for a pawn, not recovered in window.
+  const greekGift = 'rnbq1rk1/ppp1bppp/4pn2/3p2B1/3P4/2NBP3/PPP2PPP/R2QK1NR w KQ - 0 1';
+  check('Bxh7+ Kxh7 is a sacrifice',
+    detectSacrifice(greekGift, ['d3h7', 'g8h7'], 4), true);
+  // Plain recapture: exd5 exd5 — no net loss.
+  const recapture = 'rnbqkbnr/ppp2ppp/8/3pp3/3PP3/8/PPP2PPP/RNBQKBNR w KQkq - 0 3';
+  check('even exchange is not a sacrifice',
+    detectSacrifice(recapture, ['e4d5', 'd8d5'], 4), false);
+  check('empty pv → false', detectSacrifice(recapture, [], 4), false);
+}
+
+// ── countLegalMoves ──────────────────────────────────────────────────────────
+check('startpos has 20 moves',
+  countLegalMoves('rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1'), 20);
+// Qg7+ undefended against a cornered king: Kxg7 is the only legal move.
+check('single legal move counted',
+  countLegalMoves('7k/6Q1/8/8/8/8/8/K7 b - - 0 1') === 1, true);
+
+// ── classifyPhase: move-number gate (piece count alone kept games "opening") ──
+check('startpos → opening',
+  classifyPhase('rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1'), 'opening');
+// 20 pieces at move 20 (the stress game's final position shape) → middlegame.
+check('move 20 with 20 pieces → middlegame',
+  classifyPhase('r3b1k1/4rppp/pp3n2/8/P1P5/1P3Q2/5PPP/R4RK1 w - - 0 21'), 'middlegame');
+// Queens off + 16 pieces → endgame even above the 12-piece floor.
+check('queenless 16 pieces → endgame',
+  classifyPhase('r5k1/5ppp/pp3n2/8/P1P5/1P6/5PPP/R5K1 w - - 0 21'), 'endgame');
+check('bare K+P endgame → endgame', classifyPhase('8/5ppp/4k3/8/8/8/6PP/6K1 w - - 0 40'), 'endgame');
+
+// ── CLASSIFY constants sanity (puzzle generator consumes these) ──────────────
+check('tier bands ascend',
+  CLASSIFY.EXCELLENT_MAX_WPL < CLASSIFY.GOOD_MAX_WPL
+  && CLASSIFY.GOOD_MAX_WPL < CLASSIFY.INACCURACY_MAX_WPL
+  && CLASSIFY.INACCURACY_MAX_WPL < CLASSIFY.MISTAKE_MAX_WPL, true);
 
 console.log(`${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

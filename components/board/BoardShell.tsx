@@ -363,21 +363,20 @@ export function BoardShell({ initialPgn, initialFen }: BoardShellProps) {
   const handleSquareClick = useCallback(
     (sq: CbSquare, piece: Piece | undefined) => {
       const square = sq as Square;
-      if (!selectedSq && game.hasAnnotations) {
-        game.removeLastDecoration();
-        return;
-      }
-      if (!selectedSq) {
-        if (piece && pieceColor(piece) === mover) setSelectedSq(square);
-        return;
-      }
-      if (legalDests.has(square)) {
+      // Moves and piece selection always win; the LIFO decoration pop only
+      // fires on inert clicks (empty/opponent squares with nothing selected),
+      // so drawing arrows never blocks playing a move.
+      if (selectedSq && legalDests.has(square)) {
         const moved = game.makeMove(selectedSq, square);
         setSelectedSq(moved ? null : selectedSq);
         return;
       }
       if (piece && pieceColor(piece) === mover) {
         setSelectedSq(square);
+        return;
+      }
+      if (!selectedSq && game.hasAnnotations) {
+        game.removeLastDecoration();
         return;
       }
       setSelectedSq(null);
@@ -422,31 +421,41 @@ export function BoardShell({ initialPgn, initialFen }: BoardShellProps) {
   );
 
   // ── Annotations: right-click detection ────────────────────────────────────
-  const lastHoveredSq = useRef<string | null>(null);
+  // Squares are resolved from pointer coordinates via the library's own
+  // data-square attributes (orientation-proof, works over piece images and
+  // coordinate labels). The old approach seeded the drag origin from an
+  // onMouseOverSquare hover ref, which silently degraded fast right-drags
+  // into highlights whenever the hover event hadn't fired yet.
   const rightDragStart = useRef<string | null>(null);
 
+  const squareFromPoint = useCallback((x: number, y: number): string | null => {
+    const el = document
+      .elementsFromPoint(x, y)
+      .find((e) => e.hasAttribute('data-square'));
+    return el?.getAttribute('data-square') ?? null;
+  }, []);
+
+  const handleBoardPointerDown = useCallback(
+    (e: React.PointerEvent) => {
+      if (e.button === 2) rightDragStart.current = squareFromPoint(e.clientX, e.clientY);
+    },
+    [squareFromPoint],
+  );
+
   useEffect(() => {
-    const reset = () => { rightDragStart.current = null; };
-    window.addEventListener('mouseup', reset);
-    return () => window.removeEventListener('mouseup', reset);
-  }, []);
-
-  const handleMouseOverSquare = useCallback((sq: CbSquare) => {
-    lastHoveredSq.current = sq as string;
-  }, []);
-
-  const handleSquareRightClick = useCallback(
-    (sq: CbSquare) => {
+    const onPointerUp = (e: PointerEvent) => {
+      if (e.button !== 2) return;
       const start = rightDragStart.current;
       rightDragStart.current = null;
-      if (!start || start === (sq as string)) {
-        game.addHighlight(sq as string);
-      } else {
-        game.addArrow(start, sq as string);
-      }
-    },
-    [game],
-  );
+      if (!start) return;
+      const target = squareFromPoint(e.clientX, e.clientY);
+      if (!target) return;          // released off-board → no decoration
+      if (target === start) game.addHighlight(start);
+      else game.addArrow(start, target);
+    };
+    window.addEventListener('pointerup', onPointerUp);
+    return () => window.removeEventListener('pointerup', onPointerUp);
+  }, [game, squareFromPoint]);
 
   // ── Square styles ──────────────────────────────────────────────────────────
   const squareStyles = useMemo(() => {
@@ -510,9 +519,7 @@ export function BoardShell({ initialPgn, initialFen }: BoardShellProps) {
             className="flex-1 min-w-0"
             data-board-container="true"
             style={{ aspectRatio: '1 / 1' }}
-            onMouseDown={(e) => {
-              if (e.button === 2) rightDragStart.current = lastHoveredSq.current;
-            }}
+            onPointerDown={handleBoardPointerDown}
             onContextMenu={(e) => e.preventDefault()}
           >
             {boardWidth > 0 && <Chessboard
@@ -527,8 +534,6 @@ export function BoardShell({ initialPgn, initialFen }: BoardShellProps) {
               showPromotionDialog={pendingPromo !== null}
               promotionToSquare={pendingPromo?.to as CbSquare | undefined}
               areArrowsAllowed={false}
-              onMouseOverSquare={handleMouseOverSquare}
-              onSquareRightClick={handleSquareRightClick}
               customArrows={allArrows}
               customSquareStyles={squareStyles}
             />}

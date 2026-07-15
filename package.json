@@ -7,7 +7,9 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "check": "tsc --noEmit"
+    "check": "tsc --noEmit",
+    "build:openings": "node scripts/build-openings.mjs",
+    "test:review": "node scripts/review-heuristics.test.mjs && node scripts/openings.test.mjs && node scripts/classifier-calibration.test.mjs"
   },
   "dependencies": {
     "@zoendev/react-chessboard": "^4.8.4",
