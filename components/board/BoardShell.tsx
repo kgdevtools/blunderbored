@@ -22,6 +22,24 @@ import { SavePositionDialog } from '@/components/blunderable/SavedPositions';
 import { saveGame, updateGame, serializeBoardState, checkDuplicate, saveDraft, loadDraft, clearDraft, getAdjacentGame } from '@/lib/library';
 import type { LibraryGame } from '@/lib/db';
 
+// PGN's standard [%cal]/[%csl] colour letters (R/G/B/Y) mapped to render
+// colours. Anything undefined/unrecognised (incl. manually drawn decorations,
+// which carry no colour) falls back to the app's default orange.
+const DEFAULT_ARROW_COLOR = 'rgba(255,128,0,0.85)';
+const DEFAULT_HIGHLIGHT_COLOR = 'rgba(255,128,0,0.5)';
+const ARROW_COLOR: Record<string, string> = {
+  R: 'rgba(239,68,68,0.85)',
+  G: 'rgba(34,197,94,0.85)',
+  B: 'rgba(59,130,246,0.85)',
+  Y: DEFAULT_ARROW_COLOR,
+};
+const HIGHLIGHT_COLOR: Record<string, string> = {
+  R: 'rgba(239,68,68,0.45)',
+  G: 'rgba(34,197,94,0.4)',
+  B: 'rgba(59,130,246,0.4)',
+  Y: DEFAULT_HIGHLIGHT_COLOR,
+};
+
 // ─── Game info header ─────────────────────────────────────────────────────────
 
 // Game-data and Library actions now live in the ··· menu. This component just
@@ -465,8 +483,8 @@ export function BoardShell({ initialPgn, initialFen }: BoardShellProps) {
       styles[game.current.move.from] = tint;
       styles[game.current.move.to] = tint;
     }
-    for (const sq of game.annotationHighlights) {
-      styles[sq] = { backgroundColor: 'rgba(255, 128, 0, 0.5)' };
+    for (const h of game.annotationHighlights) {
+      styles[h.square] = { backgroundColor: h.color ? (HIGHLIGHT_COLOR[h.color] ?? DEFAULT_HIGHLIGHT_COLOR) : DEFAULT_HIGHLIGHT_COLOR };
     }
     if (selectedSq) {
       styles[selectedSq] = { backgroundColor: 'rgba(20, 85, 30, 0.5)' };
@@ -482,7 +500,7 @@ export function BoardShell({ initialPgn, initialFen }: BoardShellProps) {
   // ── Arrows ─────────────────────────────────────────────────────────────────
   const allArrows = useMemo((): [CbSquare, CbSquare, string][] => {
     const userArrows = game.annotationArrows.map(
-      ([from, to]) => [from as CbSquare, to as CbSquare, 'rgba(255,128,0,0.85)'] as [CbSquare, CbSquare, string],
+      (a) => [a.from as CbSquare, a.to as CbSquare, a.color ? (ARROW_COLOR[a.color] ?? DEFAULT_ARROW_COLOR) : DEFAULT_ARROW_COLOR] as [CbSquare, CbSquare, string],
     );
     const pv0 = engine.lines[0]?.pv[0];
     const engineArrow: [CbSquare, CbSquare, string][] =

@@ -6,12 +6,12 @@ import type { BlunderMove } from './blunder';
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 type HistoryEntry =
-  | { kind: 'arrow'; from: string; to: string }
-  | { kind: 'highlight'; square: string };
+  | { kind: 'arrow'; from: string; to: string; color?: string }
+  | { kind: 'highlight'; square: string; color?: string };
 
 export interface StoredAnnotation {
-  arrows: [string, string][];
-  highlights: string[];
+  arrows: { from: string; to: string; color?: string }[];
+  highlights: { square: string; color?: string }[];
   history: HistoryEntry[];
 }
 

@@ -6,12 +6,12 @@ import type { StoredAnnotation } from '@/lib/db';
 // ─── Annotation types ─────────────────────────────────────────────────────────
 
 type HistoryEntry =
-  | { kind: 'arrow'; from: string; to: string }
-  | { kind: 'highlight'; square: string };
+  | { kind: 'arrow'; from: string; to: string; color?: string }
+  | { kind: 'highlight'; square: string; color?: string };
 
 type NodeAnnotations = {
-  arrows: [string, string][];
-  highlights: string[];
+  arrows: { from: string; to: string; color?: string }[];
+  highlights: { square: string; color?: string }[];
   history: HistoryEntry[];
 };
 
@@ -33,7 +33,10 @@ import { extractNodeData, parsePgnHeaders } from '@/lib/pgnImport';
 // Builds the per-node arrow/highlight state (incl. an undo history) from the
 // arrows/highlights recovered out of a PGN's [%cal]/[%csl] tokens.
 function annotationsFromImport(
-  imported: Map<string, { arrows: [string, string][]; highlights: string[] }>,
+  imported: Map<string, {
+    arrows: { from: string; to: string; color?: string }[];
+    highlights: { square: string; color?: string }[];
+  }>,
 ): Map<string, NodeAnnotations> {
   const out = new Map<string, NodeAnnotations>();
   for (const [id, { arrows, highlights }] of imported) {
@@ -41,8 +44,8 @@ function annotationsFromImport(
       arrows,
       highlights,
       history: [
-        ...arrows.map(([from, to]) => ({ kind: 'arrow', from, to } as HistoryEntry)),
-        ...highlights.map((square) => ({ kind: 'highlight', square } as HistoryEntry)),
+        ...arrows.map((a) => ({ kind: 'arrow', ...a } as HistoryEntry)),
+        ...highlights.map((h) => ({ kind: 'highlight', ...h } as HistoryEntry)),
       ],
     });
   }
@@ -305,22 +308,23 @@ export function useBoardGame() {
 
   const currentAnn = annotations.get(current.id) ?? EMPTY_ANN;
 
-  // Toggles an arrow on the current node (same arrow twice removes it).
+  // Toggles an arrow on the current node (same arrow twice removes it). Manually
+  // drawn arrows carry no colour — they render with the default draw colour.
   const addArrow = useCallback((from: string, to: string) => {
     setAnnotations((prev) => {
       const cur = prev.get(current.id) ?? EMPTY_ANN;
-      const exists = cur.arrows.some((a) => a[0] === from && a[1] === to);
+      const exists = cur.arrows.some((a) => a.from === from && a.to === to);
       const next = new Map(prev);
       next.set(current.id, exists
         ? {
-            arrows: cur.arrows.filter((a) => !(a[0] === from && a[1] === to)),
+            arrows: cur.arrows.filter((a) => !(a.from === from && a.to === to)),
             highlights: cur.highlights,
             history: cur.history.filter(
               (h) => !(h.kind === 'arrow' && h.from === from && h.to === to),
             ),
           }
         : {
-            arrows: [...cur.arrows, [from, to]],
+            arrows: [...cur.arrows, { from, to }],
             highlights: cur.highlights,
             history: [...cur.history, { kind: 'arrow', from, to }],
           });
@@ -332,19 +336,19 @@ export function useBoardGame() {
   const addHighlight = useCallback((square: string) => {
     setAnnotations((prev) => {
       const cur = prev.get(current.id) ?? EMPTY_ANN;
-      const exists = cur.highlights.includes(square);
+      const exists = cur.highlights.some((h) => h.square === square);
       const next = new Map(prev);
       next.set(current.id, exists
         ? {
             arrows: cur.arrows,
-            highlights: cur.highlights.filter((s) => s !== square),
+            highlights: cur.highlights.filter((h) => h.square !== square),
             history: cur.history.filter(
               (h) => !(h.kind === 'highlight' && h.square === square),
             ),
           }
         : {
             arrows: cur.arrows,
-            highlights: [...cur.highlights, square],
+            highlights: [...cur.highlights, { square }],
             history: [...cur.history, { kind: 'highlight', square }],
           });
       return next;
@@ -360,10 +364,10 @@ export function useBoardGame() {
       const next = new Map(prev);
       next.set(current.id, {
         arrows: last.kind === 'arrow'
-          ? cur.arrows.filter((a) => !(a[0] === last.from && a[1] === last.to))
+          ? cur.arrows.filter((a) => !(a.from === last.from && a.to === last.to))
           : cur.arrows,
         highlights: last.kind === 'highlight'
-          ? cur.highlights.filter((s) => s !== last.square)
+          ? cur.highlights.filter((h) => h.square !== last.square)
           : cur.highlights,
         history: cur.history.slice(0, -1),
       });

@@ -96,8 +96,11 @@ export interface PgnExtras {
   comments?: Map<string, NodeAnnotation[]>;
   // Clock/eval re-emitted as [%clk]/[%eval] tokens.
   meta?: Map<string, NodeMeta>;
-  // arrows: [from, to][] and highlights: square[] keyed by node id
-  annotations?: Map<string, { arrows: [string, string][]; highlights: string[] }>;
+  // arrows/highlights (with their PGN colour letter, when known) keyed by node id
+  annotations?: Map<string, {
+    arrows: { from: string; to: string; color?: string }[];
+    highlights: { square: string; color?: string }[];
+  }>;
   // NAG codes keyed by node id, e.g. [1] = good move (!). Emitted as `$1` after the SAN.
   nags?: Map<string, number[]>;
 }
@@ -125,12 +128,12 @@ function buildMoveComment(nodeId: string, extras?: PgnExtras): string {
 
   const highlights = extras?.annotations?.get(nodeId)?.highlights ?? [];
   if (highlights.length > 0) {
-    parts.push(`[%csl ${highlights.map(sq => `Y${sq}`).join(',')}]`);
+    parts.push(`[%csl ${highlights.map(h => `${h.color ?? 'Y'}${h.square}`).join(',')}]`);
   }
 
   const arrows = extras?.annotations?.get(nodeId)?.arrows ?? [];
   if (arrows.length > 0) {
-    parts.push(`[%cal ${arrows.map(([f, t]) => `Y${f}${t}`).join(',')}]`);
+    parts.push(`[%cal ${arrows.map(a => `${a.color ?? 'Y'}${a.from}${a.to}`).join(',')}]`);
   }
 
   // All comment sources merge into the single PGN comment text.

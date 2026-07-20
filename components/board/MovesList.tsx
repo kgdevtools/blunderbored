@@ -41,6 +41,25 @@ const NAG_OPTIONS: { code: number; glyph: string; color: string }[] = [
 ];
 const NAG_BY_CODE = new Map(NAG_OPTIONS.map((n) => [n.code, n]));
 
+// Colour + compact label for a raw PGN [%eval] token ("+0.24", "-1.13", "#3",
+// "#-2"). Always White-POV per the PGN spec, regardless of whose move it is.
+function evalTokenColor(raw: string): string {
+  if (raw.startsWith('#')) return raw.slice(1).startsWith('-') ? 'text-red-400' : 'text-emerald-400';
+  const n = parseFloat(raw);
+  if (!Number.isFinite(n)) return 'text-zinc-500';
+  if (n >= 1.5) return 'text-emerald-400';
+  if (n <= -1.5) return 'text-red-400';
+  if (n >= 0.3) return 'text-emerald-300/70';
+  if (n <= -0.3) return 'text-red-300/70';
+  return 'text-zinc-500';
+}
+function evalTokenLabel(raw: string): string {
+  if (raw.startsWith('#')) return `M${raw.slice(1)}`;
+  const n = parseFloat(raw);
+  if (!Number.isFinite(n)) return raw;
+  return n > 0 ? `+${n.toFixed(2)}` : n.toFixed(2);
+}
+
 function getMoveNumber(node: GameNode): number {
   return parseInt(node.parent!.fen.split(' ')[5], 10);
 }
@@ -134,6 +153,7 @@ export function MovesList({ tokens, current, onSelect, onDeleteMove, onDeleteAft
           const annos = comments?.get(node.id) ?? [];
           const hasComment = annos.length > 0;
           const clk = meta?.get(node.id)?.clk;
+          const evalText = meta?.get(node.id)?.evalText;
           const isEditing = editingNodeId === node.id;
           const nagInfo = NAG_BY_CODE.get(nags?.get(node.id)?.[0] ?? -1);
 
@@ -174,6 +194,10 @@ export function MovesList({ tokens, current, onSelect, onDeleteMove, onDeleteAft
                     <span className={`font-bold ${isActive ? 'text-white' : nagInfo.color}`}>{nagInfo.glyph}</span>
                   )}
                 </button>
+                {/* Engine eval after this move, when the PGN carried [%eval]. */}
+                {evalText != null && (
+                  <span className={`font-mono text-[10px] tabular-nums ml-0.5 ${evalTokenColor(evalText)}`}>{evalTokenLabel(evalText)}</span>
+                )}
                 {/* Clock remaining after this move, when the PGN carried [%clk]. */}
                 {clk != null && (
                   <span className="font-mono text-[10px] text-zinc-500 tabular-nums ml-0.5">{formatSeconds(clk)}</span>

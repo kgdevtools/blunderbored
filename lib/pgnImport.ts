@@ -14,7 +14,10 @@ import type { StoredAnnotation } from './db';
 export interface ImportedNodeData {
   comments: Map<string, NodeAnnotation[]>;
   meta: Map<string, NodeMeta>;
-  annotations: Map<string, { arrows: [string, string][]; highlights: string[] }>;
+  annotations: Map<string, {
+    arrows: { from: string; to: string; color?: string }[];
+    highlights: { square: string; color?: string }[];
+  }>;
   nags: Map<string, number[]>;
 }
 
@@ -30,8 +33,8 @@ export function parsePgnHeaders(pgn: string): Record<string, string> {
 
 interface ParsedComment {
   meta: NodeMeta;
-  arrows: [string, string][];
-  highlights: string[];
+  arrows: { from: string; to: string; color?: string }[];
+  highlights: { square: string; color?: string }[];
   text: string; // free text with all [%...] tokens stripped
 }
 
@@ -42,15 +45,18 @@ function parseClkSeconds(token: string): number | null {
 }
 
 // A square spec inside %cal/%csl is an optional colour letter (R/G/Y/B/…) then
-// algebraic squares: "Ye2e4" → arrow e2→e4, "Re4" → highlight e4.
-function stripColour(spec: string): string {
-  return spec.replace(/^[A-Za-z](?=[a-h])/, '');
+// algebraic squares: "Ye2e4" → arrow e2→e4, "Re4" → highlight e4. Splits off
+// that colour letter instead of discarding it, so the PGN's own colour choice
+// survives into storage and rendering.
+function splitColour(spec: string): { color?: string; rest: string } {
+  const m = spec.match(/^([A-Za-z])(?=[a-h])/);
+  return m ? { color: m[1].toUpperCase(), rest: spec.slice(1) } : { rest: spec };
 }
 
 function parseComment(raw: string): ParsedComment {
   const meta: NodeMeta = {};
-  const arrows: [string, string][] = [];
-  const highlights: string[] = [];
+  const arrows: { from: string; to: string; color?: string }[] = [];
+  const highlights: { square: string; color?: string }[] = [];
 
   const clk = raw.match(/\[%clk\s+([^\]]+)\]/);
   if (clk) {
@@ -64,17 +70,17 @@ function parseComment(raw: string): ParsedComment {
   const csl = raw.match(/\[%csl\s+([^\]]+)\]/);
   if (csl) {
     for (const part of csl[1].split(',')) {
-      const sq = stripColour(part.trim());
-      if (/^[a-h][1-8]$/.test(sq)) highlights.push(sq);
+      const { color, rest } = splitColour(part.trim());
+      if (/^[a-h][1-8]$/.test(rest)) highlights.push({ square: rest, color });
     }
   }
 
   const cal = raw.match(/\[%cal\s+([^\]]+)\]/);
   if (cal) {
     for (const part of cal[1].split(',')) {
-      const sqs = stripColour(part.trim());
-      const mm = sqs.match(/^([a-h][1-8])([a-h][1-8])$/);
-      if (mm) arrows.push([mm[1], mm[2]]);
+      const { color, rest } = splitColour(part.trim());
+      const mm = rest.match(/^([a-h][1-8])([a-h][1-8])$/);
+      if (mm) arrows.push({ from: mm[1], to: mm[2], color });
     }
   }
 
@@ -139,7 +145,10 @@ export function extractNodeData(
 ): ImportedNodeData {
   const comments = new Map<string, NodeAnnotation[]>();
   const meta = new Map<string, NodeMeta>();
-  const annotations = new Map<string, { arrows: [string, string][]; highlights: string[] }>();
+  const annotations = new Map<string, {
+    arrows: { from: string; to: string; color?: string }[];
+    highlights: { square: string; color?: string }[];
+  }>();
   const nags = new Map<string, number[]>();
 
   // FEN → first node carrying it (root then main line). Repeated positions
@@ -211,8 +220,8 @@ export function parseGameAnnotations(pgn: string): PlyKeyedAnnotations | null {
         arrows: p.arrows,
         highlights: p.highlights,
         history: [
-          ...p.arrows.map(([from, to]) => ({ kind: 'arrow' as const, from, to })),
-          ...p.highlights.map((square) => ({ kind: 'highlight' as const, square })),
+          ...p.arrows.map((a) => ({ kind: 'arrow' as const, ...a })),
+          ...p.highlights.map((h) => ({ kind: 'highlight' as const, ...h })),
         ],
       };
     }
