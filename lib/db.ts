@@ -2,16 +2,19 @@ import Dexie, { type EntityTable } from 'dexie';
 import type { GameReview } from './analysis';
 import type { NodeAnnotation, NodeMeta } from './gameTree';
 import type { BlunderMove } from './blunder';
+import type { ArrowDecoration, HighlightDecoration, AnimationDecoration } from './decorations';
+import type { MoveQuality } from './accuracy';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-type HistoryEntry =
-  | { kind: 'arrow'; from: string; to: string; color?: string }
-  | { kind: 'highlight'; square: string; color?: string };
+type HistoryEntry = { kind: 'arrow' | 'highlight' | 'animation'; id: string };
 
 export interface StoredAnnotation {
-  arrows: { from: string; to: string; color?: string }[];
-  highlights: { square: string; color?: string }[];
+  arrows: ArrowDecoration[];
+  highlights: HighlightDecoration[];
+  // Purely additive (v7) — optional field on a non-indexed column, so no Dexie
+  // migration is needed; older rows simply lack it.
+  animations?: AnimationDecoration[];
   history: HistoryEntry[];
 }
 
@@ -149,6 +152,40 @@ export interface ChallengeReport {
   toEnd?: boolean;               // run was "play to the end" (target ignored)
 }
 
+// ─── Puzzles + spaced repetition (v7) ─────────────────────────────────────────
+// A puzzle extracted from a flagged (mistake/blunder) move in an analysed
+// game — two are generated per flagged moment (see lib/tacticsGenerator.ts),
+// mirroring Lucas Chess's "Avoid the blunder" / "Take advantage of blunder"
+// pair: 'avoid-blunder' starts from the position *before* the mistake and is
+// solved by the move that should have been played; 'punish-blunder' starts
+// *after* it and is solved by the opponent's best refutation.
+export interface Puzzle {
+  id: string;
+  fen: string;             // position to solve from
+  solutionUci: string;     // v1: a single best move (see lib/tacticsGenerator.ts)
+  kind: 'avoid-blunder' | 'punish-blunder';
+  sourceGameId?: string;   // LibraryGame.id, when generated from a saved game
+  sourcePly?: number;
+  severity: MoveQuality;   // classification at extraction time
+  winPctLoss: number;      // carried over from ReviewedMove — a difficulty proxy
+  createdAt: number;
+}
+
+// Leitner spaced-repetition state for one puzzle (1:1 with Puzzle.id).
+// Box scheme mirrors Lucas Chess's Leitner.py: 0 = untried, 1-4 = in
+// progress, 5 = mastered ("win box"). Due-scheduling is session-counted, not
+// wall-clock: a box-N item is due again N sessions after `lastSessionNum`
+// (see lib/leitner.ts) — one visit to /learn-from-mistakes that pulls a
+// batch of puzzles is "one session".
+export interface LeitnerBox {
+  puzzleId: string;
+  box: number;
+  lastSessionNum: number;
+  rightCount: number;
+  wrongCount: number;
+  masteredAtSession?: number; // session number when box first reached WIN_BOX
+}
+
 // ─── Database ─────────────────────────────────────────────────────────────────
 
 export class ChessAcademyDB extends Dexie {
@@ -159,6 +196,8 @@ export class ChessAcademyDB extends Dexie {
   graphEdges!: EntityTable<GraphEdge, 'id'>;
   challenges!: EntityTable<ChallengeReport, 'id'>;
   savedPositions!: EntityTable<SavedPosition, 'id'>;
+  puzzles!: EntityTable<Puzzle, 'id'>;
+  leitnerBoxes!: EntityTable<LeitnerBox, 'puzzleId'>;
 
   constructor() {
     super('chess-academy');
@@ -196,6 +235,12 @@ export class ChessAcademyDB extends Dexie {
     // tables and data are untouched, so older code just leaves it dormant.
     this.version(6).stores({
       savedPositions: 'id, source, createdAt, updatedAt, lastPracticedAt',
+    });
+    // v7 adds puzzles (tactics generator) + their Leitner SRS state. Purely
+    // additive — existing tables and data are untouched.
+    this.version(7).stores({
+      puzzles: 'id, sourceGameId, kind, createdAt',
+      leitnerBoxes: 'puzzleId, box, lastSessionNum',
     });
   }
 }

@@ -1,12 +1,12 @@
 'use client';
-import { useState, useCallback, useMemo, useEffect, useLayoutEffect, useRef } from 'react';
+import { useState, useCallback, useMemo, useEffect, useLayoutEffect, useRef, type FC } from 'react';
 
 // useLayoutEffect fires synchronously after DOM commit (before paint), so
 // getBoundingClientRect always returns real values. Falls back to useEffect on
 // the server where layout APIs are unavailable.
 const useMeasureEffect = typeof window !== 'undefined' ? useLayoutEffect : useEffect;
 import { Chessboard } from '@zoendev/react-chessboard';
-import type { Square as CbSquare, Piece, PromotionPieceOption } from '@zoendev/react-chessboard/dist/chessboard/types/index';
+import type { Square as CbSquare, Piece, PromotionPieceOption, CustomSquareProps } from '@zoendev/react-chessboard/dist/chessboard/types/index';
 import type { Square, PieceSymbol } from 'chess.js';
 import { useBoardGame } from '@/hooks/useBoardGame';
 import { useBoardEngine } from '@/hooks/useBoardEngine';
@@ -18,27 +18,19 @@ import { FenBar } from './FenBar';
 import { GameInfoModal } from './GameInfoModal';
 import { LibraryModal } from './LibraryModal';
 import { ClockDisplay } from './ClockDisplay';
+import { DecorationMenu, type DecorationCommit, type EditingKind } from './DecorationMenu';
 import { SavePositionDialog } from '@/components/blunderable/SavedPositions';
 import { saveGame, updateGame, serializeBoardState, checkDuplicate, saveDraft, loadDraft, clearDraft, getAdjacentGame } from '@/lib/library';
 import type { LibraryGame } from '@/lib/db';
-
-// PGN's standard [%cal]/[%csl] colour letters (R/G/B/Y) mapped to render
-// colours. Anything undefined/unrecognised (incl. manually drawn decorations,
-// which carry no colour) falls back to the app's default orange.
-const DEFAULT_ARROW_COLOR = 'rgba(255,128,0,0.85)';
-const DEFAULT_HIGHLIGHT_COLOR = 'rgba(255,128,0,0.5)';
-const ARROW_COLOR: Record<string, string> = {
-  R: 'rgba(239,68,68,0.85)',
-  G: 'rgba(34,197,94,0.85)',
-  B: 'rgba(59,130,246,0.85)',
-  Y: DEFAULT_ARROW_COLOR,
-};
-const HIGHLIGHT_COLOR: Record<string, string> = {
-  R: 'rgba(239,68,68,0.45)',
-  G: 'rgba(34,197,94,0.4)',
-  B: 'rgba(59,130,246,0.4)',
-  Y: DEFAULT_HIGHLIGHT_COLOR,
-};
+import {
+  ARROW_RENDER_COLOR,
+  HIGHLIGHT_RENDER_COLOR,
+  DEFAULT_COLOR,
+  newDecorationId,
+  type DecorationColor,
+  type AnimationEffect,
+} from '@/lib/decorations';
+import { NAG_BY_CODE } from '@/lib/nags';
 
 // ─── Game info header ─────────────────────────────────────────────────────────
 
@@ -363,11 +355,30 @@ export function BoardShell({ initialPgn, initialFen }: BoardShellProps) {
     setShowLibrary(true);
   }, []);
 
+  // The decoration (arrow/highlight/animation), if any, currently anchored at
+  // a clicked square — set on a plain inert click so a manual delete "×" can
+  // be shown for it (see the capture-overlay/badge rendering further below).
+  const [focused, setFocused] = useState<{ kind: EditingKind; id: string } | null>(null);
+
+  // First decoration (in stored order) anchored at `square` — an arrow whose
+  // from/to matches it, else a highlight/animation whose covered squares
+  // include it. Drives both edit-vs-create detection when the popup opens,
+  // and left-click focus-selection for the manual delete badge.
+  const findDecorationAt = useCallback((square: string): { kind: EditingKind; id: string } | null => {
+    const arrow = game.annotationArrows.find((a) => a.from === square || a.to === square);
+    if (arrow) return { kind: 'arrow', id: arrow.id };
+    const highlight = game.annotationHighlights.find((h) => (h.squares ?? [h.square]).includes(square));
+    if (highlight) return { kind: 'highlight', id: highlight.id };
+    const animation = game.annotationAnimations.find((a) => a.square === square);
+    if (animation) return { kind: 'animation', id: animation.id };
+    return null;
+  }, [game.annotationArrows, game.annotationHighlights, game.annotationAnimations]);
+
   // ── Click-to-move ──────────────────────────────────────────────────────────
   const [selectedSq, setSelectedSq] = useState<Square | null>(null);
   const [pendingPromo, setPendingPromo] = useState<{ from: Square; to: Square } | null>(null);
 
-  useEffect(() => { setSelectedSq(null); }, [game.currentFen]);
+  useEffect(() => { setSelectedSq(null); setFocused(null); }, [game.currentFen]);
 
   const mover = sideToMove(game.currentFen);
 
@@ -381,9 +392,12 @@ export function BoardShell({ initialPgn, initialFen }: BoardShellProps) {
   const handleSquareClick = useCallback(
     (sq: CbSquare, piece: Piece | undefined) => {
       const square = sq as Square;
-      // Moves and piece selection always win; the LIFO decoration pop only
-      // fires on inert clicks (empty/opponent squares with nothing selected),
-      // so drawing arrows never blocks playing a move.
+      // Moves and piece selection always win. An inert click (empty/opponent
+      // square with nothing selected) now *focuses* whatever decoration is
+      // anchored there — showing a manual delete "×" — instead of silently
+      // discarding the most recent decoration, which made building up
+      // several arrows/zones fragile (any stray click elsewhere used to
+      // delete the last one).
       if (selectedSq && legalDests.has(square)) {
         const moved = game.makeMove(selectedSq, square);
         setSelectedSq(moved ? null : selectedSq);
@@ -393,13 +407,13 @@ export function BoardShell({ initialPgn, initialFen }: BoardShellProps) {
         setSelectedSq(square);
         return;
       }
-      if (!selectedSq && game.hasAnnotations) {
-        game.removeLastDecoration();
+      if (!selectedSq) {
+        setFocused(findDecorationAt(square));
         return;
       }
       setSelectedSq(null);
     },
-    [selectedSq, legalDests, mover, game],
+    [selectedSq, legalDests, mover, game, findDecorationAt],
   );
 
   // ── Drag and drop ──────────────────────────────────────────────────────────
@@ -438,13 +452,22 @@ export function BoardShell({ initialPgn, initialFen }: BoardShellProps) {
     [game, pendingPromo],
   );
 
-  // ── Annotations: right-click detection ────────────────────────────────────
+  // ── Decorations: right-click / long-press popup ───────────────────────────
   // Squares are resolved from pointer coordinates via the library's own
   // data-square attributes (orientation-proof, works over piece images and
-  // coordinate labels). The old approach seeded the drag origin from an
-  // onMouseOverSquare hover ref, which silently degraded fast right-drags
-  // into highlights whenever the hover event hadn't fired yet.
-  const rightDragStart = useRef<string | null>(null);
+  // coordinate labels).
+  type ArmedTool =
+    | { kind: 'arrow'; from: string; color: DecorationColor }
+    | { kind: 'zone-highlight'; color: DecorationColor }
+    | null;
+
+  const rightMouseDownSquare = useRef<string | null>(null);
+  const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [menu, setMenu] = useState<{ x: number; y: number; square: string; editing: EditingKind; editId: string | null } | null>(null);
+  const [armed, setArmed] = useState<ArmedTool>(null);
+  const [zoneDragStart, setZoneDragStart] = useState<{ x: number; y: number; squareSize: number } | null>(null);
+  const [zoneDragEnd, setZoneDragEnd] = useState<{ x: number; y: number } | null>(null);
+  const [playingAnimIds, setPlayingAnimIds] = useState<Set<string>>(new Set());
 
   const squareFromPoint = useCallback((x: number, y: number): string | null => {
     const el = document
@@ -453,38 +476,208 @@ export function BoardShell({ initialPgn, initialFen }: BoardShellProps) {
     return el?.getAttribute('data-square') ?? null;
   }, []);
 
+  // Squares whose DOM element's centre falls within half a square-width of
+  // the start→end drag segment (clamped to the segment's length) — a
+  // "capsule" selection along the drag vector. Handles any angle with one
+  // test, so a diagonal drag selects the actual diagonal band of squares
+  // instead of the bounding rectangle between the two points.
+  const squaresAlongDrag = useCallback((start: { x: number; y: number }, end: { x: number; y: number }): string[] => {
+    const container = containerRef.current;
+    if (!container) return [];
+    const squareEls = container.querySelectorAll('[data-square]');
+    let squareSize = 0;
+    squareEls.forEach((el) => { if (!squareSize) squareSize = el.getBoundingClientRect().width; });
+    const halfWidth = squareSize / 2;
+    const dx = end.x - start.x;
+    const dy = end.y - start.y;
+    const lenSq = dx * dx + dy * dy;
+    const out: string[] = [];
+    squareEls.forEach((el) => {
+      const r = el.getBoundingClientRect();
+      const cx = r.left + r.width / 2;
+      const cy = r.top + r.height / 2;
+      const t = lenSq === 0 ? 0 : Math.max(0, Math.min(1, ((cx - start.x) * dx + (cy - start.y) * dy) / lenSq));
+      const px = start.x + t * dx;
+      const py = start.y + t * dy;
+      if (Math.hypot(cx - px, cy - py) <= halfWidth) out.push(el.getAttribute('data-square')!);
+    });
+    return out;
+  }, []);
+
+  const openMenuAt = useCallback((clientX: number, clientY: number) => {
+    const square = squareFromPoint(clientX, clientY);
+    if (!square) return;
+    const found = findDecorationAt(square);
+    setMenu({ x: clientX, y: clientY, square, editing: found?.kind ?? null, editId: found?.id ?? null });
+  }, [squareFromPoint, findDecorationAt]);
+
+  // Marks an animation as "currently playing" for ~700ms — long enough for a
+  // one-shot CSS animation to run — then lets it settle back to a plain
+  // static square, per the one-shot-then-static design.
+  const playAnimation = useCallback((id: string) => {
+    setPlayingAnimIds((prev) => new Set(prev).add(id));
+    setTimeout(() => {
+      setPlayingAnimIds((prev) => {
+        if (!prev.has(id)) return prev;
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+    }, 700);
+  }, []);
+
   const handleBoardPointerDown = useCallback(
     (e: React.PointerEvent) => {
-      if (e.button === 2) rightDragStart.current = squareFromPoint(e.clientX, e.clientY);
+      if (e.button === 2) rightMouseDownSquare.current = squareFromPoint(e.clientX, e.clientY);
     },
     [squareFromPoint],
   );
 
+  // Plain right-click (mouseup on the same square as mousedown, no drag)
+  // opens the popup. A right-drag to a different square is a no-op unless a
+  // tool is already armed — the capture overlay below handles that case.
   useEffect(() => {
     const onPointerUp = (e: PointerEvent) => {
       if (e.button !== 2) return;
-      const start = rightDragStart.current;
-      rightDragStart.current = null;
-      if (!start) return;
-      const target = squareFromPoint(e.clientX, e.clientY);
-      if (!target) return;          // released off-board → no decoration
-      if (target === start) game.addHighlight(start);
-      else game.addArrow(start, target);
+      const start = rightMouseDownSquare.current;
+      rightMouseDownSquare.current = null;
+      if (!start || armed) return;
+      const end = squareFromPoint(e.clientX, e.clientY);
+      if (end === start) openMenuAt(e.clientX, e.clientY);
     };
     window.addEventListener('pointerup', onPointerUp);
     return () => window.removeEventListener('pointerup', onPointerUp);
-  }, [game, squareFromPoint]);
+  }, [squareFromPoint, openMenuAt, armed]);
+
+  // Touch long-press (3s) opens the same popup.
+  const handleBoardTouchStart = useCallback((e: React.TouchEvent) => {
+    const touch = e.touches[0];
+    if (!touch) return;
+    const { clientX, clientY } = touch;
+    longPressTimer.current = setTimeout(() => {
+      longPressTimer.current = null;
+      openMenuAt(clientX, clientY);
+    }, 3000);
+  }, [openMenuAt]);
+  const clearLongPress = useCallback(() => {
+    if (longPressTimer.current) { clearTimeout(longPressTimer.current); longPressTimer.current = null; }
+  }, []);
+
+  // Escape cancels an armed tool (arrow-drawing / zone-drag) without committing.
+  useEffect(() => {
+    if (!armed) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') { setArmed(null); setZoneDragStart(null); setZoneDragEnd(null); }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [armed]);
+
+  const handleMenuCommit = useCallback((commit: DecorationCommit) => {
+    if (!menu) return;
+    const { square, editId } = menu;
+    switch (commit.kind) {
+      case 'recolor':
+        if (editId) game.recolorDecoration(editId, commit.color);
+        break;
+      case 'delete':
+        if (editId) game.removeDecoration(editId);
+        break;
+      case 'replay':
+        if (editId) playAnimation(editId);
+        break;
+      case 'arrow':
+        setArmed({ kind: 'arrow', from: square, color: commit.color });
+        break;
+      case 'highlight':
+        if (commit.target === 'square') game.addHighlight(square, commit.color);
+        else setArmed({ kind: 'zone-highlight', color: commit.color });
+        break;
+      case 'animate': {
+        const id = newDecorationId();
+        game.addAnimation(square, commit.effect, undefined, id);
+        playAnimation(id);
+        break;
+      }
+    }
+  }, [menu, game, playAnimation]);
+
+  // While a tool is armed, a transparent overlay captures every pointer event
+  // over the board (mouse and touch alike) so the chessboard's own piece-drag
+  // handling never sees them — the gesture is finishing a decoration instead
+  // of moving a piece.
+  const handleArmedPointerDown = useCallback((e: React.PointerEvent) => {
+    if (armed?.kind === 'zone-highlight') {
+      const squareSize = containerRef.current?.querySelector('[data-square]')?.getBoundingClientRect().width ?? 0;
+      setZoneDragStart({ x: e.clientX, y: e.clientY, squareSize });
+      setZoneDragEnd({ x: e.clientX, y: e.clientY });
+    }
+  }, [armed]);
+
+  const handleArmedPointerMove = useCallback((e: React.PointerEvent) => {
+    if (!zoneDragStart) return;
+    setZoneDragEnd({ x: e.clientX, y: e.clientY });
+  }, [zoneDragStart]);
+
+  const handleArmedPointerUp = useCallback((e: React.PointerEvent) => {
+    if (armed?.kind === 'arrow') {
+      const dest = squareFromPoint(e.clientX, e.clientY);
+      if (dest) game.addArrow(armed.from, dest, armed.color);
+    } else if (armed?.kind === 'zone-highlight' && zoneDragStart) {
+      const squares = squaresAlongDrag(zoneDragStart, { x: e.clientX, y: e.clientY });
+      if (squares.length > 0) game.addHighlight(squares[0], armed.color, squares);
+    }
+    setArmed(null);
+    setZoneDragStart(null);
+    setZoneDragEnd(null);
+  }, [armed, zoneDragStart, squareFromPoint, squaresAlongDrag, game]);
+
+  // Screen-space anchor for the focused decoration's manual-delete "×" — a
+  // highlight/animation anchors at its square, an arrow at the midpoint
+  // between its two endpoint squares.
+  const decorationAnchorRect = useCallback((kind: EditingKind, id: string): DOMRect | null => {
+    const container = containerRef.current;
+    if (!container) return null;
+    if (kind === 'arrow') {
+      const arrow = game.annotationArrows.find((a) => a.id === id);
+      if (!arrow) return null;
+      const fromEl = container.querySelector(`[data-square="${arrow.from}"]`);
+      const toEl = container.querySelector(`[data-square="${arrow.to}"]`);
+      if (!fromEl || !toEl) return null;
+      const r1 = fromEl.getBoundingClientRect();
+      const r2 = toEl.getBoundingClientRect();
+      const cx = (r1.left + r1.width / 2 + r2.left + r2.width / 2) / 2;
+      const cy = (r1.top + r1.height / 2 + r2.top + r2.height / 2) / 2;
+      return new DOMRect(cx - 10, cy - 10, 20, 20);
+    }
+    const square = kind === 'highlight'
+      ? game.annotationHighlights.find((h) => h.id === id)?.square
+      : game.annotationAnimations.find((a) => a.id === id)?.square;
+    if (!square) return null;
+    const el = container.querySelector(`[data-square="${square}"]`);
+    return el?.getBoundingClientRect() ?? null;
+  }, [game.annotationArrows, game.annotationHighlights, game.annotationAnimations]);
+
+  // Recomputed in an effect (not read during render — refs/DOM measurement
+  // must happen outside render) whenever the focus, board layout, or the
+  // decorations themselves change.
+  const [focusedRect, setFocusedRect] = useState<DOMRect | null>(null);
+  useMeasureEffect(() => {
+    setFocusedRect(focused ? decorationAnchorRect(focused.kind, focused.id) : null);
+  }, [focused, decorationAnchorRect, boardWidth, game.flipped]);
 
   // ── Square styles ──────────────────────────────────────────────────────────
+  // Only the last-move tint and the selected-square/legal-move dots — user
+  // highlights render through `customSquare` below instead (as stacked,
+  // individually semi-transparent layers), so overlapping highlights actually
+  // blend visually rather than one flat backgroundColor silently overwriting
+  // another.
   const squareStyles = useMemo(() => {
     const styles: Record<string, Record<string, string | number>> = {};
     if (game.current.move) {
       const tint = { backgroundColor: 'rgba(155, 199, 0, 0.41)' };
       styles[game.current.move.from] = tint;
       styles[game.current.move.to] = tint;
-    }
-    for (const h of game.annotationHighlights) {
-      styles[h.square] = { backgroundColor: h.color ? (HIGHLIGHT_COLOR[h.color] ?? DEFAULT_HIGHLIGHT_COLOR) : DEFAULT_HIGHLIGHT_COLOR };
     }
     if (selectedSq) {
       styles[selectedSq] = { backgroundColor: 'rgba(20, 85, 30, 0.5)' };
@@ -495,12 +688,12 @@ export function BoardShell({ initialPgn, initialFen }: BoardShellProps) {
       });
     }
     return styles;
-  }, [game.current, game.annotationHighlights, selectedSq, legalDests]);
+  }, [game.current, selectedSq, legalDests]);
 
   // ── Arrows ─────────────────────────────────────────────────────────────────
   const allArrows = useMemo((): [CbSquare, CbSquare, string][] => {
     const userArrows = game.annotationArrows.map(
-      (a) => [a.from as CbSquare, a.to as CbSquare, a.color ? (ARROW_COLOR[a.color] ?? DEFAULT_ARROW_COLOR) : DEFAULT_ARROW_COLOR] as [CbSquare, CbSquare, string],
+      (a) => [a.from as CbSquare, a.to as CbSquare, ARROW_RENDER_COLOR[a.color ?? DEFAULT_COLOR]] as [CbSquare, CbSquare, string],
     );
     const pv0 = engine.lines[0]?.pv[0];
     const engineArrow: [CbSquare, CbSquare, string][] =
@@ -509,6 +702,68 @@ export function BoardShell({ initialPgn, initialFen }: BoardShellProps) {
         : [];
     return [...engineArrow, ...userArrows];
   }, [game.annotationArrows, engine.lines]);
+
+  // ── Highlights (stacked, per-decoration layers so overlaps blend) ─────────
+  const highlightsBySquare = useMemo(() => {
+    const map = new Map<string, { id: string; color: string }[]>();
+    for (const h of game.annotationHighlights) {
+      const color = HIGHLIGHT_RENDER_COLOR[h.color ?? DEFAULT_COLOR];
+      for (const sq of h.squares ?? [h.square]) {
+        const arr = map.get(sq) ?? [];
+        arr.push({ id: h.id, color });
+        map.set(sq, arr);
+      }
+    }
+    return map;
+  }, [game.annotationHighlights]);
+
+  // ── Animations (one-shot, piece-scoped) ────────────────────────────────────
+  const activeAnimBySquare = useMemo(() => {
+    const map = new Map<string, AnimationEffect>();
+    for (const a of game.annotationAnimations) {
+      if (playingAnimIds.has(a.id)) map.set(a.square, a.effect);
+    }
+    return map;
+  }, [game.annotationAnimations, playingAnimIds]);
+
+  // ── NAG glyph badge (current move's destination square) ───────────────────
+  const currentNagGlyph = useMemo(() => {
+    const move = game.current.move;
+    if (!move) return null;
+    const codes = game.nags.get(game.current.id);
+    const nag = codes?.length ? NAG_BY_CODE.get(codes[0]) : undefined;
+    return nag ? { square: move.to, nag } : null;
+  }, [game.current, game.nags]);
+
+  const customSquare: FC<CustomSquareProps> | undefined = useMemo(() => {
+    if (highlightsBySquare.size === 0 && activeAnimBySquare.size === 0 && !currentNagGlyph) return undefined;
+    return function DecoratedSquare({ children, ref, square, style }: CustomSquareProps) {
+      const colors = highlightsBySquare.get(square as string);
+      const animEffect = activeAnimBySquare.get(square as string);
+      const pieceWrapClass = animEffect ? `decoration-${animEffect}` : undefined;
+      return (
+        <div ref={ref} style={{ ...style, position: 'relative' }}>
+          {colors?.map(({ id, color }) => (
+            <div key={id} className="decoration-fade-in" style={{ position: 'absolute', inset: 0, backgroundColor: color }} />
+          ))}
+          <div className={pieceWrapClass} style={{ width: '100%', height: '100%', position: 'relative' }}>
+            {children}
+          </div>
+          {currentNagGlyph?.square === square && (
+            <span
+              style={{
+                position: 'absolute', top: 2, right: 2, zIndex: 20, pointerEvents: 'none',
+                display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                width: 18, height: 18, borderRadius: '9999px', backgroundColor: 'rgba(0,0,0,0.75)',
+              }}
+            >
+              <span className={`font-bold text-[11px] leading-none ${currentNagGlyph.nag.color}`}>{currentNagGlyph.nag.glyph}</span>
+            </span>
+          )}
+        </div>
+      );
+    };
+  }, [highlightsBySquare, activeAnimBySquare, currentNagGlyph]);
 
   const canPrev = game.current.parent !== null;
   const canNext = game.current.children.length > 0;
@@ -534,11 +789,14 @@ export function BoardShell({ initialPgn, initialFen }: BoardShellProps) {
           )}
           <div
             ref={containerRef}
-            className="flex-1 min-w-0"
+            className="flex-1 min-w-0 relative"
             data-board-container="true"
             style={{ aspectRatio: '1 / 1' }}
             onPointerDown={handleBoardPointerDown}
             onContextMenu={(e) => e.preventDefault()}
+            onTouchStart={handleBoardTouchStart}
+            onTouchEnd={clearLongPress}
+            onTouchMove={clearLongPress}
           >
             {boardWidth > 0 && <Chessboard
               position={game.currentFen}
@@ -554,7 +812,75 @@ export function BoardShell({ initialPgn, initialFen }: BoardShellProps) {
               areArrowsAllowed={false}
               customArrows={allArrows}
               customSquareStyles={squareStyles}
+              customSquare={customSquare}
             />}
+
+            {/* Armed-tool capture overlay: while drawing an arrow or dragging a
+                zone selection, this intercepts every pointer event over the
+                board so the chessboard underneath never sees them as a piece
+                drag. */}
+            {armed && (
+              <div
+                className="absolute inset-0 z-20 cursor-crosshair touch-none"
+                onPointerDown={handleArmedPointerDown}
+                onPointerMove={handleArmedPointerMove}
+                onPointerUp={handleArmedPointerUp}
+              />
+            )}
+
+            {/* Zone drag-to-select marquee — a rotated band matching the
+                capsule selection (works for horizontal/vertical/diagonal
+                drags alike), in a neutral gray independent of the highlight
+                colour already chosen from the popup. */}
+            {zoneDragStart && zoneDragEnd && (() => {
+              const dx = zoneDragEnd.x - zoneDragStart.x;
+              const dy = zoneDragEnd.y - zoneDragStart.y;
+              const length = Math.hypot(dx, dy);
+              const angle = Math.atan2(dy, dx) * 180 / Math.PI;
+              return (
+                <div
+                  className="fixed z-30 border-2 border-dashed border-gray-400 bg-gray-400/10 pointer-events-none"
+                  style={{
+                    left: zoneDragStart.x,
+                    top: zoneDragStart.y - zoneDragStart.squareSize / 2,
+                    width: length,
+                    height: zoneDragStart.squareSize,
+                    transformOrigin: 'left center',
+                    transform: `rotate(${angle}deg)`,
+                  }}
+                />
+              );
+            })()}
+
+            {/* Manual delete "×" for the focused decoration — click a
+                decorated square/arrow to focus it, then click this to remove
+                it. Replaces the old implicit "any click deletes the last
+                decoration" behaviour, which made building up several
+                arrows/zones fragile. */}
+            {focused && focusedRect && (
+              <button
+                className="fixed z-40 w-5 h-5 rounded-full bg-red-600 hover:bg-red-500 text-white text-xs font-bold leading-none flex items-center justify-center shadow"
+                style={{ left: focusedRect.right - 10, top: focusedRect.top - 10 }}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  game.removeDecoration(focused.id);
+                  setFocused(null);
+                }}
+                title="Delete decoration"
+              >
+                ×
+              </button>
+            )}
+
+            {menu && (
+              <DecorationMenu
+                x={menu.x}
+                y={menu.y}
+                editing={menu.editing}
+                onCommit={handleMenuCommit}
+                onClose={() => setMenu(null)}
+              />
+            )}
           </div>
         </div>
 

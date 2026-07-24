@@ -1,8 +1,11 @@
+import { LearnFromMistakesShell } from '@/components/learn-from-mistakes/LearnFromMistakesShell';
+
 export default function LearnFromMistakesPage() {
   return (
-    <main className="flex min-h-screen flex-col items-center justify-center p-8">
-      <h1 className="text-2xl font-bold mb-2">Learn from Mistakes</h1>
-      <p className="text-gray-400 text-sm">Coming soon</p>
+    <main className="flex min-h-screen flex-col items-center px-0 py-2 md:p-8">
+      <div className="w-full max-w-3xl">
+        <LearnFromMistakesShell />
+      </div>
     </main>
   );
 }

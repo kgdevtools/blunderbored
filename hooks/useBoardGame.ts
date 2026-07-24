@@ -2,20 +2,36 @@ import { useState, useCallback, useMemo } from 'react';
 import { Chess, DEFAULT_POSITION } from 'chess.js';
 import type { Square, PieceSymbol } from 'chess.js';
 import type { StoredAnnotation } from '@/lib/db';
+import {
+  newDecorationId,
+  type ArrowDecoration,
+  type HighlightDecoration,
+  type AnimationDecoration,
+  type AnimationEffect,
+  type DecorationColor,
+} from '@/lib/decorations';
 
 // ─── Annotation types ─────────────────────────────────────────────────────────
 
-type HistoryEntry =
-  | { kind: 'arrow'; from: string; to: string; color?: string }
-  | { kind: 'highlight'; square: string; color?: string };
+type HistoryEntry = { kind: 'arrow' | 'highlight' | 'animation'; id: string };
 
 type NodeAnnotations = {
-  arrows: { from: string; to: string; color?: string }[];
-  highlights: { square: string; color?: string }[];
+  arrows: ArrowDecoration[];
+  highlights: HighlightDecoration[];
+  animations: AnimationDecoration[];
   history: HistoryEntry[];
 };
 
-const EMPTY_ANN: NodeAnnotations = { arrows: [], highlights: [], history: [] };
+const EMPTY_ANN: NodeAnnotations = { arrows: [], highlights: [], animations: [], history: [] };
+
+function toNodeAnnotations(stored: StoredAnnotation): NodeAnnotations {
+  return {
+    arrows: stored.arrows,
+    highlights: stored.highlights,
+    animations: stored.animations ?? [],
+    history: stored.history,
+  };
+}
 import {
   GameNode,
   createRootNode,
@@ -31,21 +47,20 @@ import {
 import { extractNodeData, parsePgnHeaders } from '@/lib/pgnImport';
 
 // Builds the per-node arrow/highlight state (incl. an undo history) from the
-// arrows/highlights recovered out of a PGN's [%cal]/[%csl] tokens.
+// arrows/highlights recovered out of a PGN's [%cal]/[%csl] tokens. PGN has no
+// token for animations, so imported nodes always start with none.
 function annotationsFromImport(
-  imported: Map<string, {
-    arrows: { from: string; to: string; color?: string }[];
-    highlights: { square: string; color?: string }[];
-  }>,
+  imported: Map<string, { arrows: ArrowDecoration[]; highlights: HighlightDecoration[] }>,
 ): Map<string, NodeAnnotations> {
   const out = new Map<string, NodeAnnotations>();
   for (const [id, { arrows, highlights }] of imported) {
     out.set(id, {
       arrows,
       highlights,
+      animations: [],
       history: [
-        ...arrows.map((a) => ({ kind: 'arrow', ...a } as HistoryEntry)),
-        ...highlights.map((h) => ({ kind: 'highlight', ...h } as HistoryEntry)),
+        ...arrows.map((a) => ({ kind: 'arrow' as const, id: a.id })),
+        ...highlights.map((h) => ({ kind: 'highlight' as const, id: h.id })),
       ],
     });
   }
@@ -301,75 +316,132 @@ export function useBoardGame() {
     setNodeCommentsMap(mapFromPly(savedComments, newRoot, mainNodes));
     setNodeMetaMap(mapFromPly(savedMeta, newRoot, mainNodes));
     setNagsMap(mapFromPly(savedNags, newRoot, mainNodes));
-    setAnnotations(mapFromPly(savedAnnotations, newRoot, mainNodes) as Map<string, NodeAnnotations>);
+    const mappedAnnotations = mapFromPly(savedAnnotations, newRoot, mainNodes);
+    setAnnotations(new Map([...mappedAnnotations].map(([id, v]) => [id, toNodeAnnotations(v)])));
   }, []);
 
   // ─── Annotations ──────────────────────────────────────────────────────────
+  // Arrows/highlights/animations on the current node, in creation order (the
+  // `order` field on each + the `history` list drive both z-order rendering
+  // and LIFO undo). Every mutator below stamps a fresh id via newDecorationId
+  // so an arbitrary decoration — not just the most recent — can later be
+  // recoloured or deleted from the right-click/long-press edit popup.
 
   const currentAnn = annotations.get(current.id) ?? EMPTY_ANN;
 
-  // Toggles an arrow on the current node (same arrow twice removes it). Manually
-  // drawn arrows carry no colour — they render with the default draw colour.
-  const addArrow = useCallback((from: string, to: string) => {
+  const nextOrder = (cur: NodeAnnotations) => cur.history.length;
+
+  // Adds/recolours/removes an arrow. Re-picking the same from→to squares
+  // toggles it off if the colour matches (redraw-to-undo), or recolours it in
+  // place if the colour differs (redraw-to-recolour) — so the board never
+  // ends up with two overlapping arrows on the same squares.
+  const addArrow = useCallback((from: string, to: string, color?: DecorationColor) => {
     setAnnotations((prev) => {
       const cur = prev.get(current.id) ?? EMPTY_ANN;
-      const exists = cur.arrows.some((a) => a.from === from && a.to === to);
+      const existing = cur.arrows.find((a) => a.from === from && a.to === to);
       const next = new Map(prev);
-      next.set(current.id, exists
-        ? {
-            arrows: cur.arrows.filter((a) => !(a.from === from && a.to === to)),
-            highlights: cur.highlights,
-            history: cur.history.filter(
-              (h) => !(h.kind === 'arrow' && h.from === from && h.to === to),
-            ),
-          }
-        : {
-            arrows: [...cur.arrows, { from, to }],
-            highlights: cur.highlights,
-            history: [...cur.history, { kind: 'arrow', from, to }],
-          });
+      if (existing && existing.color === color) {
+        next.set(current.id, {
+          ...cur,
+          arrows: cur.arrows.filter((a) => a.id !== existing.id),
+          history: cur.history.filter((h) => h.id !== existing.id),
+        });
+      } else if (existing) {
+        next.set(current.id, {
+          ...cur,
+          arrows: cur.arrows.map((a) => (a.id === existing.id ? { ...a, color } : a)),
+        });
+      } else {
+        const arrow: ArrowDecoration = { id: newDecorationId(), order: nextOrder(cur), from, to, color };
+        next.set(current.id, {
+          ...cur,
+          arrows: [...cur.arrows, arrow],
+          history: [...cur.history, { kind: 'arrow', id: arrow.id }],
+        });
+      }
       return next;
     });
   }, [current.id]);
 
-  // Toggles a square highlight on the current node.
-  const addHighlight = useCallback((square: string) => {
+  // Adds/recolours/removes a single-square or zone highlight. `squares`
+  // (present only for a zone) is compared as a set for coalescing; omit it for
+  // a plain single-square highlight.
+  const addHighlight = useCallback((square: string, color?: DecorationColor, squares?: string[]) => {
     setAnnotations((prev) => {
       const cur = prev.get(current.id) ?? EMPTY_ANN;
-      const exists = cur.highlights.some((h) => h.square === square);
+      const key = (squares ?? [square]).slice().sort().join(',');
+      const existing = cur.highlights.find((h) => (h.squares ?? [h.square]).slice().sort().join(',') === key);
       const next = new Map(prev);
-      next.set(current.id, exists
-        ? {
-            arrows: cur.arrows,
-            highlights: cur.highlights.filter((h) => h.square !== square),
-            history: cur.history.filter(
-              (h) => !(h.kind === 'highlight' && h.square === square),
-            ),
-          }
-        : {
-            arrows: cur.arrows,
-            highlights: [...cur.highlights, { square }],
-            history: [...cur.history, { kind: 'highlight', square }],
-          });
+      if (existing && existing.color === color) {
+        next.set(current.id, {
+          ...cur,
+          highlights: cur.highlights.filter((h) => h.id !== existing.id),
+          history: cur.history.filter((h) => h.id !== existing.id),
+        });
+      } else if (existing) {
+        next.set(current.id, {
+          ...cur,
+          highlights: cur.highlights.map((h) => (h.id === existing.id ? { ...h, color } : h)),
+        });
+      } else {
+        const highlight: HighlightDecoration = { id: newDecorationId(), order: nextOrder(cur), square, squares, color };
+        next.set(current.id, {
+          ...cur,
+          highlights: [...cur.highlights, highlight],
+          history: [...cur.history, { kind: 'highlight', id: highlight.id }],
+        });
+      }
       return next;
     });
   }, [current.id]);
 
-  // Removes the most recently added annotation (LIFO).
-  const removeLastDecoration = useCallback(() => {
+  // Animations are one-shot events, not togglable state — each call always
+  // adds a new decoration. `id` lets the caller (BoardShell) generate it up
+  // front so it can start tracking playback the instant it commits, rather
+  // than diffing state after the fact.
+  const addAnimation = useCallback((square: string, effect: AnimationEffect, color?: DecorationColor, id?: string) => {
     setAnnotations((prev) => {
-      const cur = prev.get(current.id);
-      if (!cur || cur.history.length === 0) return prev;
-      const last = cur.history[cur.history.length - 1];
+      const cur = prev.get(current.id) ?? EMPTY_ANN;
+      const animation: AnimationDecoration = { id: id ?? newDecorationId(), order: nextOrder(cur), square, effect, color };
       const next = new Map(prev);
       next.set(current.id, {
-        arrows: last.kind === 'arrow'
-          ? cur.arrows.filter((a) => !(a.from === last.from && a.to === last.to))
-          : cur.arrows,
-        highlights: last.kind === 'highlight'
-          ? cur.highlights.filter((h) => h.square !== last.square)
-          : cur.highlights,
-        history: cur.history.slice(0, -1),
+        ...cur,
+        animations: [...cur.animations, animation],
+        history: [...cur.history, { kind: 'animation', id: animation.id }],
+      });
+      return next;
+    });
+  }, [current.id]);
+
+  // Recolours any decoration in place (used by the edit popup's colour
+  // swatches) without touching its position in the order/history.
+  const recolorDecoration = useCallback((id: string, color?: DecorationColor) => {
+    setAnnotations((prev) => {
+      const cur = prev.get(current.id);
+      if (!cur) return prev;
+      const next = new Map(prev);
+      next.set(current.id, {
+        ...cur,
+        arrows: cur.arrows.map((a) => (a.id === id ? { ...a, color } : a)),
+        highlights: cur.highlights.map((h) => (h.id === id ? { ...h, color } : h)),
+        animations: cur.animations.map((a) => (a.id === id ? { ...a, color } : a)),
+      });
+      return next;
+    });
+  }, [current.id]);
+
+  // Removes one specific decoration by id (used by the edit popup's Delete
+  // action) — unlike removeLastDecoration this isn't restricted to LIFO order.
+  const removeDecoration = useCallback((id: string) => {
+    setAnnotations((prev) => {
+      const cur = prev.get(current.id);
+      if (!cur) return prev;
+      const next = new Map(prev);
+      next.set(current.id, {
+        arrows: cur.arrows.filter((a) => a.id !== id),
+        highlights: cur.highlights.filter((h) => h.id !== id),
+        animations: cur.animations.filter((a) => a.id !== id),
+        history: cur.history.filter((h) => h.id !== id),
       });
       return next;
     });
@@ -404,11 +476,13 @@ export function useBoardGame() {
     // Annotations (derived from current node)
     annotationArrows: currentAnn.arrows,
     annotationHighlights: currentAnn.highlights,
-    hasAnnotations: currentAnn.history.length > 0,
+    annotationAnimations: currentAnn.animations,
     allAnnotations: annotations,
     addArrow,
     addHighlight,
-    removeLastDecoration,
+    addAnimation,
+    recolorDecoration,
+    removeDecoration,
     // Tree editing
     deleteMove,
     deleteAfter,

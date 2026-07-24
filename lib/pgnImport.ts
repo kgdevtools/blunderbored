@@ -10,13 +10,14 @@
 import { Chess } from 'chess.js';
 import { sanitizePgn, type GameNode, type NodeAnnotation, type NodeMeta } from './gameTree';
 import type { StoredAnnotation } from './db';
+import { newDecorationId, type ArrowDecoration, type HighlightDecoration, type DecorationColor } from './decorations';
 
 export interface ImportedNodeData {
   comments: Map<string, NodeAnnotation[]>;
   meta: Map<string, NodeMeta>;
   annotations: Map<string, {
-    arrows: { from: string; to: string; color?: string }[];
-    highlights: { square: string; color?: string }[];
+    arrows: ArrowDecoration[];
+    highlights: HighlightDecoration[];
   }>;
   nags: Map<string, number[]>;
 }
@@ -33,8 +34,8 @@ export function parsePgnHeaders(pgn: string): Record<string, string> {
 
 interface ParsedComment {
   meta: NodeMeta;
-  arrows: { from: string; to: string; color?: string }[];
-  highlights: { square: string; color?: string }[];
+  arrows: ArrowDecoration[];
+  highlights: HighlightDecoration[];
   text: string; // free text with all [%...] tokens stripped
 }
 
@@ -44,19 +45,25 @@ function parseClkSeconds(token: string): number | null {
   return Number(m[1]) * 3600 + Number(m[2]) * 60 + parseFloat(m[3]);
 }
 
-// A square spec inside %cal/%csl is an optional colour letter (R/G/Y/B/…) then
+const KNOWN_PGN_COLORS = new Set(['R', 'G', 'B', 'Y']);
+
+// A square spec inside %cal/%csl is an optional colour letter (R/G/Y/B) then
 // algebraic squares: "Ye2e4" → arrow e2→e4, "Re4" → highlight e4. Splits off
 // that colour letter instead of discarding it, so the PGN's own colour choice
-// survives into storage and rendering.
-function splitColour(spec: string): { color?: string; rest: string } {
+// survives into storage and rendering. Unrecognised letters (rare, non-
+// standard exports) fall back to no colour rather than widening our type.
+function splitColour(spec: string): { color?: DecorationColor; rest: string } {
   const m = spec.match(/^([A-Za-z])(?=[a-h])/);
-  return m ? { color: m[1].toUpperCase(), rest: spec.slice(1) } : { rest: spec };
+  if (!m) return { rest: spec };
+  const letter = m[1].toUpperCase();
+  return { color: KNOWN_PGN_COLORS.has(letter) ? (letter as DecorationColor) : undefined, rest: spec.slice(1) };
 }
 
 function parseComment(raw: string): ParsedComment {
   const meta: NodeMeta = {};
-  const arrows: { from: string; to: string; color?: string }[] = [];
-  const highlights: { square: string; color?: string }[] = [];
+  const arrows: ArrowDecoration[] = [];
+  const highlights: HighlightDecoration[] = [];
+  let order = 0;
 
   const clk = raw.match(/\[%clk\s+([^\]]+)\]/);
   if (clk) {
@@ -71,7 +78,7 @@ function parseComment(raw: string): ParsedComment {
   if (csl) {
     for (const part of csl[1].split(',')) {
       const { color, rest } = splitColour(part.trim());
-      if (/^[a-h][1-8]$/.test(rest)) highlights.push({ square: rest, color });
+      if (/^[a-h][1-8]$/.test(rest)) highlights.push({ id: newDecorationId(), order: order++, square: rest, color });
     }
   }
 
@@ -80,7 +87,7 @@ function parseComment(raw: string): ParsedComment {
     for (const part of cal[1].split(',')) {
       const { color, rest } = splitColour(part.trim());
       const mm = rest.match(/^([a-h][1-8])([a-h][1-8])$/);
-      if (mm) arrows.push({ from: mm[1], to: mm[2], color });
+      if (mm) arrows.push({ id: newDecorationId(), order: order++, from: mm[1], to: mm[2], color });
     }
   }
 
@@ -146,8 +153,8 @@ export function extractNodeData(
   const comments = new Map<string, NodeAnnotation[]>();
   const meta = new Map<string, NodeMeta>();
   const annotations = new Map<string, {
-    arrows: { from: string; to: string; color?: string }[];
-    highlights: { square: string; color?: string }[];
+    arrows: ArrowDecoration[];
+    highlights: HighlightDecoration[];
   }>();
   const nags = new Map<string, number[]>();
 
@@ -220,8 +227,8 @@ export function parseGameAnnotations(pgn: string): PlyKeyedAnnotations | null {
         arrows: p.arrows,
         highlights: p.highlights,
         history: [
-          ...p.arrows.map((a) => ({ kind: 'arrow' as const, ...a })),
-          ...p.highlights.map((h) => ({ kind: 'highlight' as const, ...h })),
+          ...p.arrows.map((a) => ({ kind: 'arrow' as const, id: a.id })),
+          ...p.highlights.map((h) => ({ kind: 'highlight' as const, id: h.id })),
         ],
       };
     }

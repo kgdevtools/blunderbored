@@ -3,6 +3,7 @@ import { Fragment, useEffect, useRef, useState } from 'react';
 import type { GameNode, MoveListToken, NodeAnnotation, NodeMeta, AnnoSource } from '@/lib/gameTree';
 import { formatSeconds } from '@/lib/clock';
 import { scrollActiveIntoView } from '@/lib/scroll';
+import { NAG_OPTIONS, NAG_BY_CODE } from '@/lib/nags';
 import { RefLinker } from './RefLinker';
 import { SavePositionDialog } from '@/components/blunderable/SavedPositions';
 
@@ -29,17 +30,6 @@ interface MovesListProps {
   // their source; when null the ref action is disabled.
   gameId?: string | null;
 }
-
-// Standard PGN NAGs, ordered best → worst for the picker.
-const NAG_OPTIONS: { code: number; glyph: string; color: string }[] = [
-  { code: 3, glyph: '!!', color: 'text-green-400' },
-  { code: 1, glyph: '!',  color: 'text-green-400' },
-  { code: 5, glyph: '!?', color: 'text-blue-400' },
-  { code: 6, glyph: '?!', color: 'text-amber-400' },
-  { code: 2, glyph: '?',  color: 'text-red-400' },
-  { code: 4, glyph: '??', color: 'text-red-400' },
-];
-const NAG_BY_CODE = new Map(NAG_OPTIONS.map((n) => [n.code, n]));
 
 // Colour + compact label for a raw PGN [%eval] token ("+0.24", "-1.13", "#3",
 // "#-2"). Always White-POV per the PGN spec, regardless of whose move it is.

@@ -11,8 +11,9 @@ interface Feature {
 
 const features: Feature[] = [
   { href: '/board',             label: 'Board',               description: 'Free-form interactive chess board with engine analysis', status: 'live' },
-  { href: '/analysis',          label: 'Game Reviewer',       description: 'Review a full game with engine evaluation and annotations', status: 'dev' },
+  { href: '/game-reviewer',     label: 'Game Reviewer',       description: 'Review a full game with engine evaluation and annotations', status: 'live' },
   { href: '/blunderable',       label: 'Blunderable',         description: 'Who blunders first — survive the engine without a blunder', status: 'live' },
+  { href: '/puzzle-generator',  label: 'Puzzle Generator',    description: 'Turn blunders from an analysed game into practice puzzles', status: 'live' },
 ];
 
 const builtFeatures = features.filter((f) => f.status !== 'planned');
@@ -22,8 +23,8 @@ export default function Home() {
     <main className="flex min-h-screen flex-col items-center p-8">
       <h1 className="text-3xl font-bold mb-8">Blunderbored</h1>
 
-      <div className="w-full max-w-5xl border border-zinc-800 rounded-sm overflow-hidden">
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-px bg-zinc-800">
+      <div className="w-full max-w-2xl border border-zinc-800 rounded-sm overflow-hidden">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-px bg-zinc-800">
           {builtFeatures.map((f) =>
             f.status === 'dev' ? (
               // In development — shown but disabled/greyed out

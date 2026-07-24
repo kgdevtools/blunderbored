@@ -1,39 +1,20 @@
 'use client';
-import { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback, type FC } from 'react';
+import { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback } from 'react';
 
 // useLayoutEffect fires synchronously after DOM commit (before paint), so
 // getBoundingClientRect always returns real values. Falls back to useEffect on
 // the server where layout APIs are unavailable.
 const useMeasureEffect = typeof window !== 'undefined' ? useLayoutEffect : useEffect;
 import { useRouter } from 'next/navigation';
-import { Chess, DEFAULT_POSITION } from 'chess.js';
+import { Chess } from 'chess.js';
 import { Chessboard } from '@zoendev/react-chessboard';
-import type { Square as CbSquare, CustomSquareProps } from '@zoendev/react-chessboard/dist/chessboard/types/index';
+import type { Square as CbSquare } from '@zoendev/react-chessboard/dist/chessboard/types/index';
 import { useGameReviewer } from '@/hooks/useGameReviewer';
+import { useQualityGlyphSquare } from '@/hooks/useQualityGlyphSquare';
 import { PASS1_DEPTH, PASS2_DEPTH, PASS2_MULTIPV } from '@/lib/analysis';
 import { EvalBar } from '@/components/board/EvalBar';
-import { QUALITY_META, type MoveQuality } from '@/lib/accuracy';
-import { createRootNode, addMove, toMainLinePgn, sanitizePgn, type GameNode } from '@/lib/gameTree';
-import { extractNodeData } from '@/lib/pgnImport';
-
-// Move quality → standard PGN NAG code, for baking the reviewer's verdicts into
-// the PGN handed to the board. good/excellent/best/book/forced carry no glyph.
-const QUALITY_NAG: Partial<Record<MoveQuality, number>> = {
-  brilliant: 3,  // !!
-  great: 1,      // !
-  inaccuracy: 6, // ?!
-  mistake: 2,    // ?
-  miss: 2,       // ? (a missed win reads as a mistake in standard NAGs)
-  blunder: 4,    // ??
-};
-
-// White-perspective centipawns → a PGN [%eval] token (pawns, or #-mate).
-function formatEvalToken(cp: number): string {
-  if (cp >= 9900) return '#1';
-  if (cp <= -9900) return '#-1';
-  const v = cp / 100;
-  return (v >= 0 ? '+' : '') + v.toFixed(2);
-}
+import { buildEnrichedPgn } from '@/lib/reviewToBoardPgn';
+import { AnalysisModal } from './AnalysisModal';
 import { GameSummary } from './GameSummary';
 import { ReviewMoveList } from './ReviewMoveList';
 import { GameReport } from '@/components/graph/GameReport';
@@ -198,96 +179,6 @@ function ProgressBar({ phase, current, total }: { phase: 'scan' | 'deep'; curren
   );
 }
 
-// ── Analysis run modal (progress + stats + live log) ──────────────────────────
-
-import type { ReviewLogEvent } from '@/lib/analysis';
-
-const LOG_LEVEL_CLS: Record<ReviewLogEvent['level'], string> = {
-  info:  'text-zinc-400',
-  warn:  'text-amber-400',
-  error: 'text-red-400',
-};
-
-function AnalysisModal({
-  progress, logs, onHide,
-}: {
-  progress: { phase: 'scan' | 'deep'; current: number; total: number };
-  logs: ReviewLogEvent[];
-  onHide: () => void;
-}) {
-  const logRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    logRef.current?.scrollTo({ top: logRef.current.scrollHeight });
-  }, [logs.length]);
-
-  const { phase, current, total } = progress;
-  const pct = total > 0 ? Math.round((current / total) * 100) : 0;
-  // Pace + ETA from the run log's own timestamps (the last progress event).
-  const last = logs[logs.length - 1];
-  const elapsed = last ? last.ts / 1000 : 0;
-  const rate = elapsed > 0.5 && current > 0 ? current / elapsed : null;
-  const eta = rate && total > current ? Math.round((total - current) / rate) : null;
-
-  const stat = (label: string, value: string) => (
-    <div className="flex flex-col items-center px-2 py-1">
-      <span className="text-sm font-bold tabular-nums text-zinc-100 leading-tight">{value}</span>
-      <span className="text-[9px] uppercase tracking-wide text-zinc-500">{label}</span>
-    </div>
-  );
-
-  return (
-    <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 p-4">
-      <div className="w-full max-w-md bg-zinc-900 border border-zinc-700 rounded-lg shadow-2xl flex flex-col overflow-hidden">
-        <div className="px-4 pt-3 pb-2 flex items-center justify-between">
-          <h3 className="text-sm font-semibold text-zinc-100">Analysing game</h3>
-          <span className="text-xs text-zinc-500">{PHASE_LABEL[phase]}</span>
-          <span className="text-xs tabular-nums text-zinc-400">{pct}%</span>
-        </div>
-
-        <div className="px-4">
-          <div className="h-1.5 rounded-full bg-zinc-800 overflow-hidden">
-            <div className="h-full bg-blue-500 transition-[width] duration-200" style={{ width: `${pct}%` }} />
-          </div>
-        </div>
-
-        {/* Stat tiles */}
-        <div className="px-2 py-1.5 grid grid-cols-4 divide-x divide-zinc-800">
-          {stat('positions', total ? `${current}/${total}` : '—')}
-          {stat('elapsed', `${elapsed.toFixed(0)}s`)}
-          {stat('pace', rate ? `${rate.toFixed(1)}/s` : '—')}
-          {stat('eta', eta != null ? `~${eta}s` : '—')}
-        </div>
-
-        {/* Live run log */}
-        <div
-          ref={logRef}
-          className="mx-3 mb-2 h-36 overflow-y-auto rounded bg-zinc-950/80 border border-zinc-800 px-2 py-1.5 font-mono text-[10px] leading-relaxed"
-        >
-          {logs.length === 0 ? (
-            <p className="text-zinc-600">Starting engine…</p>
-          ) : (
-            logs.map((l, i) => (
-              <div key={i} className={LOG_LEVEL_CLS[l.level]}>
-                <span className="text-zinc-600 tabular-nums">{(l.ts / 1000).toFixed(1).padStart(6)}s</span> {l.msg}
-              </div>
-            ))
-          )}
-        </div>
-
-        <div className="px-4 pb-3 flex justify-end">
-          <button
-            onClick={onHide}
-            className="px-3 py-1 rounded text-xs text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 transition-colors"
-            title="Continue in the background — progress stays visible in the panel"
-          >
-            Hide
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 // ── Shell ─────────────────────────────────────────────────────────────────────
 
 interface ReviewerShellProps {
@@ -397,48 +288,7 @@ export function ReviewerShell({ initialPgn }: ReviewerShellProps) {
   }, [reviewer.currentMove?.bestMoveUci]);
 
   // ── Quality glyph badge (custom square renderer) ───────────────────────────
-  const glyphSquare = useMemo(() => {
-    const m = reviewer.currentMove;
-    if (!m || m.quality === 'book') return null;
-    try {
-      const chess = new Chess(m.fenBefore);
-      const move = chess.move(m.moveSan);
-      return move ? { square: move.to, quality: m.quality } : null;
-    } catch { return null; }
-  }, [reviewer.currentMove?.fenBefore, reviewer.currentMove?.moveSan, reviewer.currentMove?.quality]);
-
-  const customSquare: FC<CustomSquareProps> | undefined = useMemo(() => {
-    if (!glyphSquare) return undefined;
-    const { square: glyphSq, quality } = glyphSquare;
-    const meta = QUALITY_META[quality as MoveQuality];
-    return function GlyphSquare({ children, ref, square, style }: CustomSquareProps) {
-      return (
-        <div ref={ref} style={{ ...style, position: 'relative' }}>
-          {children}
-          {square === glyphSq && (
-            <span
-              style={{
-                position: 'absolute',
-                top: 2,
-                right: 2,
-                fontSize: 10,
-                fontWeight: 700,
-                lineHeight: 1,
-                color: meta.hex,
-                textShadow: '0 0 3px rgba(0,0,0,0.9)',
-                pointerEvents: 'none',
-                zIndex: 20,
-                userSelect: 'none',
-              }}
-            >
-              {meta.symbol}
-            </span>
-          )}
-        </div>
-      );
-    };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [glyphSquare?.square, glyphSquare?.quality]);
+  const customSquare = useQualityGlyphSquare(reviewer.currentMove);
 
   // ── Nav state ──────────────────────────────────────────────────────────────
   const canPrev = reviewer.currentMoveIndex >= 0;
@@ -469,43 +319,7 @@ export function ReviewerShell({ initialPgn }: ReviewerShellProps) {
     if (!review) { goRaw(); return; }
 
     try {
-      const clean = sanitizePgn(pgn);
-      const chess = new Chess();
-      chess.loadPgn(clean);
-      const history = chess.history({ verbose: true });
-      const root = createRootNode(history[0]?.before ?? DEFAULT_POSITION);
-      const mainNodes: GameNode[] = [];
-      let node = root;
-      for (const m of history) { node = addMove(node, m, m.after); mainNodes.push(node); }
-
-      // Start from the PGN's own annotations, then overlay the reviewer's.
-      const data = extractNodeData(chess, clean, root, mainNodes);
-      for (const rm of review.moves) {
-        const n = mainNodes[rm.moveIndex];
-        if (!n) continue;
-        data.meta.set(n.id, { ...(data.meta.get(n.id) ?? {}), evalText: formatEvalToken(rm.evalAfter) });
-        const nag = QUALITY_NAG[rm.quality];
-        if (nag) {
-          const cur = data.nags.get(n.id) ?? [];
-          if (!cur.includes(nag)) data.nags.set(n.id, [...cur, nag]);
-        }
-      }
-      reviewComments.forEach((text, moveIndex) => {
-        const n = mainNodes[moveIndex];
-        if (!n || !text.trim()) return;
-        const list = data.comments.get(n.id) ?? [];
-        data.comments.set(n.id, [...list, { source: 'reviewer', text: text.trim() }]);
-      });
-
-      const annForExport = new Map(
-        [...data.annotations].map(([id, a]) => [id, { arrows: a.arrows, highlights: a.highlights }]),
-      );
-      const enriched = toMainLinePgn(root, localHeaders, {
-        comments: data.comments,
-        meta: data.meta,
-        annotations: annForExport,
-        nags: data.nags,
-      });
+      const enriched = buildEnrichedPgn(pgn, review, localHeaders, reviewComments);
       router.push(`/board?pgn=${encodeURIComponent(enriched)}`);
     } catch {
       goRaw(); // any trouble: fall back to the original PGN unchanged

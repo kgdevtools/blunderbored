@@ -1,5 +1,6 @@
 import type { Move } from 'chess.js';
 import { formatClk } from './clock';
+import { pgnLetter, isPgnExportableArrow, isPgnExportableHighlight, type ArrowDecoration, type HighlightDecoration } from './decorations';
 
 export interface GameNode {
   id: string;
@@ -98,8 +99,8 @@ export interface PgnExtras {
   meta?: Map<string, NodeMeta>;
   // arrows/highlights (with their PGN colour letter, when known) keyed by node id
   annotations?: Map<string, {
-    arrows: { from: string; to: string; color?: string }[];
-    highlights: { square: string; color?: string }[];
+    arrows: ArrowDecoration[];
+    highlights: HighlightDecoration[];
   }>;
   // NAG codes keyed by node id, e.g. [1] = good move (!). Emitted as `$1` after the SAN.
   nags?: Map<string, number[]>;
@@ -126,14 +127,17 @@ function buildMoveComment(nodeId: string, extras?: PgnExtras): string {
   if (meta?.clk != null) parts.push(`[%clk ${formatClk(meta.clk)}]`);
   if (meta?.evalText) parts.push(`[%eval ${meta.evalText}]`);
 
-  const highlights = extras?.annotations?.get(nodeId)?.highlights ?? [];
+  // Only single-square, non-gray highlights/arrows are representable in
+  // standard PGN — zones and the app-only GRAY color are silently dropped
+  // rather than emitted as tokens other software can't parse.
+  const highlights = (extras?.annotations?.get(nodeId)?.highlights ?? []).filter(isPgnExportableHighlight);
   if (highlights.length > 0) {
-    parts.push(`[%csl ${highlights.map(h => `${h.color ?? 'Y'}${h.square}`).join(',')}]`);
+    parts.push(`[%csl ${highlights.map(h => `${pgnLetter(h.color)}${h.square}`).join(',')}]`);
   }
 
-  const arrows = extras?.annotations?.get(nodeId)?.arrows ?? [];
+  const arrows = (extras?.annotations?.get(nodeId)?.arrows ?? []).filter(isPgnExportableArrow);
   if (arrows.length > 0) {
-    parts.push(`[%cal ${arrows.map(a => `${a.color ?? 'Y'}${a.from}${a.to}`).join(',')}]`);
+    parts.push(`[%cal ${arrows.map(a => `${pgnLetter(a.color)}${a.from}${a.to}`).join(',')}]`);
   }
 
   // All comment sources merge into the single PGN comment text.
