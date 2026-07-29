@@ -215,6 +215,70 @@ export function toMainLinePgn(root: GameNode, headers?: Record<string, string>, 
   return `${headerLines.join('\n')}\n\n${movePart}`;
 }
 
+// Move number for `node`, derived from its parent's FEN (robust across
+// variations — no running counter to keep in sync while recursing).
+function moveNumberOf(node: GameNode): number {
+  return parseInt(node.parent!.fen.split(' ')[5], 10);
+}
+
+// Renders a straight run of main-line nodes (as returned by getMainLine),
+// breaking out any of each node's non-main children as a trailing "(...)"
+// variation — recursively, so nested sub-variations get their own parens.
+// `forceNumber` handles the "N... san" vs bare "san" choice for a leading
+// black move (true right after a variation break or at the very start).
+function renderLine(nodes: GameNode[], forceNumber: boolean, extras?: PgnExtras): string {
+  const parts: string[] = [];
+  for (const node of nodes) {
+    const num = moveNumberOf(node);
+    if (node.move!.color === 'w') parts.push(`${num}. ${renderMove(node, extras)}`);
+    else if (forceNumber) parts.push(`${num}... ${renderMove(node, extras)}`);
+    else parts.push(renderMove(node, extras));
+    forceNumber = false;
+
+    const [, ...sideChildren] = node.children;
+    for (const side of sideChildren) {
+      parts.push(`(${renderLine(getMainLine(side), true, extras)})`);
+      forceNumber = true; // resuming the main line after a variation needs the number again
+    }
+  }
+  return parts.join(' ');
+}
+
+// Like toMainLinePgn, but recurses into every child (not just children[0]),
+// emitting standard PGN "(...)" variation syntax for sidelines. Used only to
+// produce a reference-only record of a puzzle's authoring session — the
+// output is for display, never parsed back into solve-mode grading (which
+// always uses the flat solutionLineUci on the saved Puzzle).
+export function toPgnWithVariations(root: GameNode, headers?: Record<string, string>, extras?: PgnExtras): string {
+  const mainNodes = getMainLine(root).slice(1); // drop root itself (no .move)
+  let moveText = renderLine(mainNodes, true, extras);
+
+  // Alternate very-first moves branch directly off the root.
+  const [, ...rootSideChildren] = root.children;
+  for (const side of rootSideChildren) {
+    moveText += ` (${renderLine(getMainLine(side), true, extras)})`;
+  }
+
+  if (!headers || Object.keys(headers).length === 0) return moveText;
+
+  const STANDARD_ORDER = ['Event', 'Site', 'Date', 'Round', 'White', 'Black', 'Result'];
+  const written = new Set<string>();
+  const headerLines: string[] = [];
+  for (const key of STANDARD_ORDER) {
+    if (headers[key] !== undefined) {
+      headerLines.push(`[${key} "${headers[key]}"]`);
+      written.add(key);
+    }
+  }
+  for (const [key, val] of Object.entries(headers)) {
+    if (!written.has(key)) headerLines.push(`[${key} "${val}"]`);
+  }
+
+  const result = headers.Result ?? '*';
+  const movePart = moveText ? `${moveText} ${result}` : result;
+  return `${headerLines.join('\n')}\n\n${movePart}`;
+}
+
 // Removes all moves before 'node' by making the position just before it the new root.
 // Returns the new root; 'node' and all its descendants are preserved.
 export function deleteMovesBeforeNode(node: GameNode): GameNode {

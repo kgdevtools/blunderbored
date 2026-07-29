@@ -153,21 +153,74 @@ export interface ChallengeReport {
 }
 
 // ─── Puzzles + spaced repetition (v7) ─────────────────────────────────────────
-// A puzzle extracted from a flagged (mistake/blunder) move in an analysed
-// game — two are generated per flagged moment (see lib/tacticsGenerator.ts),
-// mirroring Lucas Chess's "Avoid the blunder" / "Take advantage of blunder"
-// pair: 'avoid-blunder' starts from the position *before* the mistake and is
-// solved by the move that should have been played; 'punish-blunder' starts
-// *after* it and is solved by the opponent's best refutation.
+// A puzzle built from a flagged (mistake/blunder) move in an analysed game —
+// hand-picked via Game Analysis's puzzle mode (click a flagged move, pick one
+// of its engine variations). 'avoid-blunder' starts from the position
+// *before* the mistake and is solved by the move that should have been
+// played; 'punish-blunder' is a legacy kind from an earlier batch-generation
+// flow (position *after* the mistake, solved by the refutation) — no longer
+// produced, kept for puzzles saved before this changed.
 export interface Puzzle {
   id: string;
   fen: string;             // position to solve from
-  solutionUci: string;     // v1: a single best move (see lib/tacticsGenerator.ts)
+  solutionUci: string;     // first solution move (kept for learn-from-mistakes back-compat)
+  // The full winning variation (UCI, solver's move first, opponent replies
+  // interleaved) — the engine PV at extraction, extended to ≥6 half-moves
+  // unless checkmate ends it sooner. Solve mode replays this line. Optional:
+  // pre-v8 puzzles only carry the single move.
+  solutionLineUci?: string[];
+  // Alternate acceptable FIRST moves: when the engine's two best moves were
+  // near-equal (≤30cp apart) at extraction, either is a correct start — the
+  // solver isn't punished for picking the co-best move.
+  altFirstMovesUci?: string[];
   kind: 'avoid-blunder' | 'punish-blunder';
   sourceGameId?: string;   // LibraryGame.id, when generated from a saved game
   sourcePly?: number;
   severity: MoveQuality;   // classification at extraction time
   winPctLoss: number;      // carried over from ReviewedMove — a difficulty proxy
+  createdAt: number;
+  // User-entered metadata, set in the puzzle batch-edit modal before saving.
+  title?: string;
+  note?: string;
+  // The move that produced `fen` — the opponent's last move for an
+  // avoid-blunder puzzle, or the blunder itself for a punish-blunder puzzle.
+  // Lets Solve mode highlight "what just happened" (Lichess-style) even for
+  // a puzzle reopened from a saved workout, with no live GameReview around.
+  leadingMoveUci?: string;
+  leadingMoveSan?: string;
+  // Hand-authored puzzles (Puzzle Create page) only, below — optional so
+  // engine-generated puzzles (no Dexie migration needed) simply lack them.
+  themes?: string[];        // chip tags, shown in Puzzle Set tab + Edit tab
+  // Full authored tree (incl. sidelines explored while building the puzzle),
+  // serialised via lib/gameTree.ts's toPgnWithVariations. Reference-only: shown
+  // in Preview as extra lines to look at, never parsed back into solve-mode
+  // grading (which always uses solutionLineUci above).
+  annotationPgn?: string;
+}
+
+// A named, saved set of puzzles ("workout") — created from the Puzzle
+// Generator's "Save Set", listed under the Library modal's Workouts tab.
+export interface WorkoutSet {
+  id: string;
+  name: string;
+  puzzleIds: string[];
+  sourceGameId?: string;
+  createdAt: number;
+  // Time allocated for the whole set (chosen once, at creation) — undefined
+  // means untimed. This is a set-level setting, not per-puzzle: Solve mode
+  // starts the clock (or doesn't) based on this rather than asking each time.
+  timerSeconds?: number;
+}
+
+// Unused since the batch severity-filter generation flow was replaced by
+// hand-picking puzzles move-by-move — kept (not deleted) so existing Dexie
+// installs don't need a destructive schema change for an empty table.
+export interface PuzzleGenDraft {
+  id: string;              // movetext fingerprint (lib/library.ts)
+  pgn: string;
+  severity: string;
+  puzzleIds: string[];
+  flaggedMoveCount: number;
   createdAt: number;
 }
 
@@ -198,6 +251,8 @@ export class ChessAcademyDB extends Dexie {
   savedPositions!: EntityTable<SavedPosition, 'id'>;
   puzzles!: EntityTable<Puzzle, 'id'>;
   leitnerBoxes!: EntityTable<LeitnerBox, 'puzzleId'>;
+  workoutSets!: EntityTable<WorkoutSet, 'id'>;
+  puzzleGenDrafts!: EntityTable<PuzzleGenDraft, 'id'>;
 
   constructor() {
     super('chess-academy');
@@ -241,6 +296,14 @@ export class ChessAcademyDB extends Dexie {
     this.version(7).stores({
       puzzles: 'id, sourceGameId, kind, createdAt',
       leitnerBoxes: 'puzzleId, box, lastSessionNum',
+    });
+    // v8 adds workout sets (saved puzzle sets → Library "Workouts" tab) and
+    // the puzzle-generator draft cache. Purely additive. (Puzzle gains the
+    // optional solutionLineUci/altFirstMovesUci fields — non-indexed, no
+    // migration needed; pre-v8 rows simply lack them.)
+    this.version(8).stores({
+      workoutSets: 'id, createdAt',
+      puzzleGenDrafts: 'id, createdAt',
     });
   }
 }

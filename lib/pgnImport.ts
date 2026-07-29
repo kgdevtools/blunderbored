@@ -32,7 +32,7 @@ export function parsePgnHeaders(pgn: string): Record<string, string> {
 
 // ─── Comment-token parsing ────────────────────────────────────────────────────
 
-interface ParsedComment {
+export interface ParsedComment {
   meta: NodeMeta;
   arrows: ArrowDecoration[];
   highlights: HighlightDecoration[];
@@ -59,7 +59,7 @@ function splitColour(spec: string): { color?: DecorationColor; rest: string } {
   return { color: KNOWN_PGN_COLORS.has(letter) ? (letter as DecorationColor) : undefined, rest: spec.slice(1) };
 }
 
-function parseComment(raw: string): ParsedComment {
+export function parseComment(raw: string): ParsedComment {
   const meta: NodeMeta = {};
   const arrows: ArrowDecoration[] = [];
   const highlights: HighlightDecoration[] = [];

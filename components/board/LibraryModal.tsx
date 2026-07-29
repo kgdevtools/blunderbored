@@ -10,9 +10,10 @@ import { ConceptList } from './ConceptList';
 import { GraphView } from './GraphView';
 import { PerformanceCharts, type ChartKind } from './PerformanceCharts';
 import { PositionsManager } from '@/components/blunderable/PositionsManager';
+import { WorkoutsList } from './WorkoutsList';
 import { hasActiveFilters, type GameFilters, type GameFormat } from '@/lib/gameMeta';
 
-type Tab = 'folders' | 'concepts' | 'graph' | 'positions';
+type Tab = 'folders' | 'concepts' | 'graph' | 'positions' | 'workouts';
 
 // ─── Icons ────────────────────────────────────────────────────────────────────
 
@@ -302,7 +303,7 @@ export function LibraryModal({ mode, onSaveHere, onLoad, onClose, currentGameId,
         {/* ── Tab strip (browse only) ────────────────────────────────────── */}
         {mode === 'browse' && (
           <div className="flex items-center gap-1 px-3 py-1.5 border-b border-zinc-800 shrink-0">
-            {(['folders', 'concepts', 'graph', 'positions'] as const).map((t) => (
+            {(['folders', 'concepts', 'graph', 'positions', 'workouts'] as const).map((t) => (
               <button
                 key={t}
                 onClick={() => setTab(t)}
@@ -443,6 +444,12 @@ export function LibraryModal({ mode, onSaveHere, onLoad, onClose, currentGameId,
         {activeTab === 'positions' && (
           <div className="flex-1 min-h-0 overflow-y-auto p-3">
             <PositionsManager onPractice={(p) => { onClose(); router.push(`/blunderable?pos=${p.id}`); }} />
+          </div>
+        )}
+
+        {activeTab === 'workouts' && (
+          <div className="flex-1 min-h-0 overflow-y-auto">
+            <WorkoutsList onSolve={(s) => { onClose(); router.push(`/puzzles?workoutId=${s.id}`); }} />
           </div>
         )}
       </div>

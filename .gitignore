@@ -49,3 +49,7 @@ next-env.d.ts
 
 # Claude Code local files (settings, plans, memory, transcripts)
 .claude/
+
+# local-only notes / log dumps — never committed
+/NOTES_FOR_FUTIRE_FEATURES
+/NETLIFY_BUILD_LOGS

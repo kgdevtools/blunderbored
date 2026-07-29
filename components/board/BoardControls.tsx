@@ -83,7 +83,7 @@ function PauseIcon() {
   );
 }
 
-interface BoardControlsProps {
+export interface BoardTransportProps {
   onStart: () => void;
   onPrev: () => void;
   onNext: () => void;
@@ -91,6 +91,9 @@ interface BoardControlsProps {
   onFlip: () => void;
   canPrev: boolean;
   canNext: boolean;
+}
+
+interface BoardControlsProps extends BoardTransportProps {
   exportPgn: () => string;
   // 3-dot menu actions
   onNewGame: () => void;
@@ -103,6 +106,9 @@ interface BoardControlsProps {
   onPrevGame?: () => void;
   onNextGame?: () => void;
   gameNavEnabled?: boolean;
+  // Engine (EvalBar + EngineLines) visibility — hidden by default.
+  showEngine: boolean;
+  onToggleEngine: () => void;
 }
 
 const btn =
@@ -117,19 +123,13 @@ const menuItem =
 const sectionLabel =
   'px-3 pt-1.5 pb-0.5 text-[10px] font-semibold uppercase tracking-widest text-zinc-500';
 
-export function BoardControls({
-  onStart, onPrev, onNext, onEnd, onFlip,
-  canPrev, canNext,
-  exportPgn,
-  onNewGame, onAddGameData, onSaveToLibrary, onOpenLibrary, onSavePosition, isLoaded,
-  onPrevGame, onNextGame, gameNavEnabled,
-}: BoardControlsProps) {
-  const router = useRouter();
-  const [showMenu, setShowMenu] = useState(false);
-  const menuRef = useRef<HTMLDivElement>(null);
-  const triggerRef = useRef<HTMLButtonElement>(null);
-
-  // ── Replay (auto-advance) ──────────────────────────────────────────────────
+// The transport row itself (⟨⟨ ⟨ ▶/❚❚ ⟩ ⟩⟩ ⇅) plus its replay-interval and
+// keyboard-shortcut behavior — factored out of BoardControls so any other
+// board surface (Puzzle Create/Preview) gets the exact same buttons/behavior
+// instead of a hand-rolled equivalent. Renders as a fragment of buttons, meant
+// to sit inside the caller's own flex row alongside whatever else it needs
+// (a menu trigger, extra nav buttons, ...).
+export function BoardTransport({ onStart, onPrev, onNext, onEnd, onFlip, canPrev, canNext }: BoardTransportProps) {
   // A persistent interval steps once per second while playing. It reads the
   // latest position/handler through refs rather than effect deps: `canNext`
   // stays true through the middle of a game and `onNext` is a stable callback,
@@ -168,6 +168,38 @@ export function BoardControls({
     return () => window.removeEventListener('keydown', handler);
   }, [onStart, onPrev, onNext, onEnd, onFlip]);
 
+  return (
+    <>
+      <button className={btn} onClick={onStart} disabled={!canPrev} title="Start (Home)">⟨⟨</button>
+      <button className={btn} onClick={onPrev}  disabled={!canPrev} title="Previous (←)">⟨</button>
+      <button
+        className={`${btn} grid place-items-center`}
+        onClick={toggleReplay}
+        disabled={!canNext && !canPrev}
+        title={isPlaying ? 'Pause replay' : 'Replay (1s/move)'}
+      >
+        {isPlaying ? <PauseIcon /> : <PlayIcon />}
+      </button>
+      <button className={btn} onClick={onNext}  disabled={!canNext} title="Next (→)">⟩</button>
+      <button className={btn} onClick={onEnd}   disabled={!canNext} title="End (End)">⟩⟩</button>
+      <button className={btn} onClick={onFlip}  title="Flip board (F)">⇅</button>
+    </>
+  );
+}
+
+export function BoardControls({
+  onStart, onPrev, onNext, onEnd, onFlip,
+  canPrev, canNext,
+  exportPgn,
+  onNewGame, onAddGameData, onSaveToLibrary, onOpenLibrary, onSavePosition, isLoaded,
+  onPrevGame, onNextGame, gameNavEnabled,
+  showEngine, onToggleEngine,
+}: BoardControlsProps) {
+  const router = useRouter();
+  const [showMenu, setShowMenu] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+
   // Close 3-dot menu on outside click
   useEffect(() => {
     if (!showMenu) return;
@@ -192,12 +224,7 @@ export function BoardControls({
     setShowMenu(false);
   };
 
-  const handleSendToGameReviewer = () => {
-    router.push(`/game-reviewer?pgn=${encodeURIComponent(exportPgn())}`);
-    setShowMenu(false);
-  };
-
-  const handleSendToPuzzleGenerator = () => {
+  const handleSendToGameAnalysis = () => {
     router.push(`/puzzle-generator?pgn=${encodeURIComponent(exportPgn())}`);
     setShowMenu(false);
   };
@@ -216,19 +243,7 @@ export function BoardControls({
       >
         ◂
       </button>
-      <button className={btn} onClick={onStart} disabled={!canPrev} title="Start (Home)">⟨⟨</button>
-      <button className={btn} onClick={onPrev}  disabled={!canPrev} title="Previous (←)">⟨</button>
-      <button
-        className={`${btn} grid place-items-center`}
-        onClick={toggleReplay}
-        disabled={!canNext && !canPrev}
-        title={isPlaying ? 'Pause replay' : 'Replay (1s/move)'}
-      >
-        {isPlaying ? <PauseIcon /> : <PlayIcon />}
-      </button>
-      <button className={btn} onClick={onNext}  disabled={!canNext} title="Next (→)">⟩</button>
-      <button className={btn} onClick={onEnd}   disabled={!canNext} title="End (End)">⟩⟩</button>
-      <button className={btn} onClick={onFlip}  title="Flip board (F)">⇅</button>
+      <BoardTransport onStart={onStart} onPrev={onPrev} onNext={onNext} onEnd={onEnd} onFlip={onFlip} canPrev={canPrev} canNext={canNext} />
 
       {/* Menu trigger */}
       <button
@@ -263,6 +278,10 @@ export function BoardControls({
             <PlusIcon />
             New Game
           </button>
+          <button className={menuItem} onClick={runAndClose(onToggleEngine)}>
+            <span className="inline-block w-[13px] text-center">🔧</span>
+            {showEngine ? 'Hide Engine' : 'Show Engine'}
+          </button>
           <button className={menuItem} onClick={runAndClose(onAddGameData)}>
             <TagIcon />
             Add Game Data
@@ -289,11 +308,8 @@ export function BoardControls({
           {/* ── Export ───────────────────────────────────────────── */}
           <div className="my-1 border-t border-zinc-700" />
           <div className={sectionLabel}>Export</div>
-          <button className={menuItem} onClick={handleSendToGameReviewer}>
-            Send to Game Reviewer
-          </button>
-          <button className={menuItem} onClick={handleSendToPuzzleGenerator}>
-            Send to Puzzle Generator
+          <button className={menuItem} onClick={handleSendToGameAnalysis}>
+            Send to Game Analysis
           </button>
           <button className={menuItem} onClick={handleDownloadPgn}>
             <DownloadIcon />

@@ -89,7 +89,7 @@ export function LearnFromMistakesShell() {
         <h1 className="text-xl font-bold text-zinc-100 mb-2">Learn From Mistakes</h1>
         <p className="text-sm">
           No puzzles yet — generate some from a game on the{' '}
-          <Link href="/puzzle-generator" className="text-blue-400 underline">Puzzle Generator</Link> first.
+          <Link href="/puzzle-generator" className="text-blue-400 underline">Game Analysis</Link> first.
         </p>
       </div>
     );

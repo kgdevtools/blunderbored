@@ -45,6 +45,8 @@ import {
   type NodeMeta,
 } from '@/lib/gameTree';
 import { extractNodeData, parsePgnHeaders } from '@/lib/pgnImport';
+import { parsePgnWithVariations } from '@/lib/pgnVariations';
+import { devlog } from '@/lib/devlog';
 
 // Builds the per-node arrow/highlight state (incl. an undo history) from the
 // arrows/highlights recovered out of a PGN's [%cal]/[%csl] tokens. PGN has no
@@ -103,10 +105,14 @@ export function useBoardGame() {
 
   const currentFen = current.fen;
 
-  const legalMoves = useMemo(
-    () => new Chess(currentFen).moves({ verbose: true }),
-    [currentFen],
-  );
+  const legalMoves = useMemo(() => {
+    try {
+      return new Chess(currentFen).moves({ verbose: true });
+    } catch (err) {
+      devlog('board', 'legalMoves: invalid FEN on current node', { fen: currentFen, error: String(err) });
+      return [];
+    }
+  }, [currentFen]);
 
   const mainLine = useMemo(() => getMainLine(root), [root, treeVersion]);
 
@@ -117,7 +123,10 @@ export function useBoardGame() {
   // Returns false if the PGN couldn't be parsed so callers can surface an error
   // instead of failing silently. Sanitises mobile-paste quirks (curly quotes,
   // non-breaking spaces) that would otherwise make chess.js throw.
-  const loadPgn = useCallback((pgn: string): boolean => {
+  // startAtBeginning lands `current` on the root instead of the end of the
+  // main line — for callers that want to replay a just-imported game move by
+  // move (e.g. the Puzzle Creator) rather than jump straight to its end.
+  const loadPgn = useCallback((pgn: string, opts?: { startAtBeginning?: boolean }): boolean => {
     const clean = sanitizePgn(pgn);
     const chess = new Chess();
     try {
@@ -130,25 +139,46 @@ export function useBoardGame() {
     setHeadersState(parsePgnHeaders(clean));
 
     const startFen = history[0]?.before ?? DEFAULT_POSITION;
-    const newRoot = createRootNode(startFen);
-    const mainNodes: GameNode[] = [];
-    let node = newRoot;
-    for (const move of history) {
-      node = addMove(node, move, move.after);
-      mainNodes.push(node);
+
+    // Parse variations (up to 2 levels deep) with our own RAV-aware tokenizer
+    // — chess.js's loadPgn() only ever surfaces the main line. Cross-check its
+    // main-line output against chess.js's own history as a safety net: if a
+    // pathological PGN trips up the tokenizer, fall back to the flat
+    // main-line-only tree rather than risk an incomplete/wrong import.
+    const parsed = parsePgnWithVariations(clean, startFen);
+    let newRoot: GameNode;
+    let node: GameNode;
+    let mainNodes: GameNode[];
+    if (parsed.mainNodes.length === history.length) {
+      ({ root: newRoot, mainNodes } = parsed);
+      node = mainNodes[mainNodes.length - 1] ?? newRoot;
+      setAnnotations(annotationsFromImport(parsed.annotations));
+      setNodeCommentsMap(parsed.comments);
+      setNodeMetaMap(parsed.meta);
+      setNagsMap(parsed.nags);
+    } else {
+      devlog('board', 'variation parser main-line mismatch — falling back to flat import', {
+        expected: history.length, got: parsed.mainNodes.length,
+      });
+      newRoot = createRootNode(startFen);
+      mainNodes = [];
+      node = newRoot;
+      for (const move of history) {
+        node = addMove(node, move, move.after);
+        mainNodes.push(node);
+      }
+      // Recover comments / clk / eval / arrows / NAGs the PGN carried instead
+      // of dropping them; original comments come in tagged source 'pgn'.
+      const data = extractNodeData(chess, clean, newRoot, mainNodes);
+      setAnnotations(annotationsFromImport(data.annotations));
+      setNodeCommentsMap(data.comments);
+      setNodeMetaMap(data.meta);
+      setNagsMap(data.nags);
     }
 
-    // Recover comments / clk / eval / arrows / NAGs the PGN carried instead of
-    // dropping them; original comments come in tagged source 'pgn'.
-    const data = extractNodeData(chess, clean, newRoot, mainNodes);
-
     setRoot(newRoot);
-    setCurrent(node);
+    setCurrent(opts?.startAtBeginning ? newRoot : node);
     setTreeVersion(0);
-    setAnnotations(annotationsFromImport(data.annotations));
-    setNodeCommentsMap(data.comments);
-    setNodeMetaMap(data.meta);
-    setNagsMap(data.nags);
     return true;
   }, []);
 
@@ -163,7 +193,17 @@ export function useBoardGame() {
     });
   }, []);
 
-  const loadFen = useCallback((fen: string) => {
+  // Returns false (and leaves the current tree untouched) if the FEN doesn't
+  // parse — chess.js's Chess constructor throws on malformed FEN, and without
+  // this guard that throw would happen synchronously inside a render-phase
+  // useMemo (legalMoves) with no Error Boundary above it, crashing the app.
+  const loadFen = useCallback((fen: string): boolean => {
+    try {
+      new Chess(fen);
+    } catch (err) {
+      devlog('board', 'loadFen: rejected invalid FEN', { fen, error: String(err) });
+      return false;
+    }
     const newRoot = createRootNode(fen);
     setRoot(newRoot);
     setCurrent(newRoot);
@@ -172,6 +212,7 @@ export function useBoardGame() {
     setNodeCommentsMap(new Map());
     setNodeMetaMap(new Map());
     setNagsMap(new Map());
+    return true;
   }, []);
 
   // Fresh start: reset to the initial position and clear all game metadata.
@@ -293,20 +334,38 @@ export function useBoardGame() {
     savedMeta?: Record<string, NodeMeta>,
   ) => {
     const chess = new Chess();
+    const clean = sanitizePgn(pgn);
     try {
-      chess.loadPgn(sanitizePgn(pgn));
+      chess.loadPgn(clean);
     } catch {
       return; // leave the current board untouched rather than crashing
     }
     const history = chess.history({ verbose: true });
 
     const startFen = history[0]?.before ?? DEFAULT_POSITION;
-    const newRoot = createRootNode(startFen);
-    const mainNodes: GameNode[] = [];
-    let node = newRoot;
-    for (const move of history) {
-      node = addMove(node, move, move.after);
-      mainNodes.push(node);
+    // Variation-aware tree (see loadPgn above for the same mismatch-fallback
+    // rationale). Per-node annotations below still restore from the saved,
+    // ply-keyed maps (main line only) as before — a saved game's variations
+    // get their moves back, not yet their comments/NAGs/clocks; that would
+    // need ply-keying extended to cover variation nodes too.
+    const parsed = parsePgnWithVariations(clean, startFen);
+    let newRoot: GameNode;
+    let node: GameNode;
+    let mainNodes: GameNode[];
+    if (parsed.mainNodes.length === history.length) {
+      ({ root: newRoot, mainNodes } = parsed);
+      node = mainNodes[mainNodes.length - 1] ?? newRoot;
+    } else {
+      devlog('board', 'variation parser main-line mismatch — falling back to flat import', {
+        expected: history.length, got: parsed.mainNodes.length,
+      });
+      newRoot = createRootNode(startFen);
+      mainNodes = [];
+      node = newRoot;
+      for (const move of history) {
+        node = addMove(node, move, move.after);
+        mainNodes.push(node);
+      }
     }
 
     setRoot(newRoot);

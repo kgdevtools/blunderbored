@@ -5,6 +5,17 @@ const nextConfig: NextConfig = {
     'unspoiled-prancing-resisting.ngrok-free.dev',
     '192.168.110.202',
   ],
+  async redirects() {
+    return [
+      // Game Reviewer was folded into Game Analysis (/puzzle-generator) —
+      // keep old links/bookmarks working. Query params pass through as-is.
+      {
+        source: '/game-reviewer',
+        destination: '/puzzle-generator',
+        permanent: true,
+      },
+    ];
+  },
   async headers() {
     return [
       {

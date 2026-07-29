@@ -6,6 +6,6 @@ export default async function AnalysisRedirectPage({
   searchParams: Promise<{ pgn?: string }>;
 }) {
   const { pgn } = await searchParams;
-  const target = pgn ? `/game-reviewer?pgn=${encodeURIComponent(pgn)}` : '/game-reviewer';
+  const target = pgn ? `/puzzle-generator?pgn=${encodeURIComponent(pgn)}` : '/puzzle-generator';
   redirect(target);
 }

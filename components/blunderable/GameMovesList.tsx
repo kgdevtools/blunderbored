@@ -1,6 +1,7 @@
 'use client';
 import { useEffect, useRef } from 'react';
 import { CLASS_META, TIME_META, classifyMoveTime, type BlunderMove } from '@/lib/blunder';
+import { MovesViewToggle, useMovesView } from '@/components/common/MovesViewToggle';
 
 // A PGN-intelligent scoresheet for /blunderable, in the spirit of /board's
 // MovesList (mono SAN, move-number gutter, scrolls) but trimmed to what this mode
@@ -32,10 +33,13 @@ export function GameMovesList({
 }) {
   const endRef = useRef<HTMLDivElement>(null);
   const activeRef = useRef<HTMLDivElement>(null);
+  // Vertical rows are this scoresheet's native shape; inline is the flowing
+  // alternative for a quick shape-of-the-game read.
+  const [view, setView] = useMovesView('blunderable', 'vertical');
   useEffect(() => { if (autoScroll) endRef.current?.scrollIntoView({ block: 'nearest' }); }, [plies.length, autoScroll]);
   useEffect(() => {
     if (activePly != null && activePly >= 0) activeRef.current?.scrollIntoView({ block: 'nearest' });
-  }, [activePly]);
+  }, [activePly, view]);
 
   // The k-th of the player's own plies maps to moves[k] (quality/eval/time).
   const bmByIndex = new Map<number, BlunderMove>();
@@ -99,15 +103,53 @@ export function GameMovesList({
     );
   };
 
+  // Inline flowing view — SAN stream with glyph/eval riding along (time bars
+  // stay vertical-only; they need the row layout to breathe).
+  const renderInlinePly = (cell: Cell) => {
+    const isPlayer = cell.ply.color === 'w' ? side === 'w' : side === 'b';
+    const bm = bmByIndex.get(cell.index);
+    const meta = bm && mode === 'report' ? CLASS_META[bm.cls] : null;
+    const isActive = activePly === cell.index;
+    const inner = (
+      <>
+        {cell.ply.color === 'w' && <span className="font-mono text-zinc-600 mr-px">{cell.ply.num}.</span>}
+        <span className={`font-mono ${isActive ? 'text-white font-semibold' : isPlayer ? 'text-zinc-100' : 'text-zinc-400'}`}>{cell.ply.san}</span>
+        {meta?.glyph && <span className="font-mono font-bold text-xs ml-px" style={{ color: meta.color }}>{meta.glyph}</span>}
+        {mode === 'report' && bm?.evalCp != null && (
+          <span className="font-mono text-[10px] tabular-nums text-zinc-500 ml-0.5">{fmtCp(bm.evalCp)}</span>
+        )}
+      </>
+    );
+    if (!onSelectPly) return <span key={cell.index} className="inline-flex items-baseline">{inner}</span>;
+    return (
+      <button
+        key={cell.index}
+        onClick={() => onSelectPly(cell.index)}
+        className={`inline-flex items-baseline rounded-sm px-0.5 transition-colors ${isActive ? 'bg-indigo-700/50' : 'hover:bg-zinc-800/60'}`}
+      >
+        {inner}
+      </button>
+    );
+  };
+
   return (
     <div className={`${heightClass} overflow-y-auto ${className}`}>
-      {rows.map((r) => (
-        <div key={r.num} className="flex items-start gap-2 py-0.5 border-b border-zinc-800/40 last:border-0 text-sm">
-          <span className="font-mono text-zinc-600 w-7 shrink-0 text-right pt-px">{r.num}.</span>
-          <div className="flex-1 min-w-0">{renderCell(r.w)}</div>
-          <div className="flex-1 min-w-0">{renderCell(r.b)}</div>
+      <div className="flex justify-end pb-0.5 sticky top-0">
+        <MovesViewToggle view={view} onChange={setView} />
+      </div>
+      {view === 'inline' ? (
+        <div className="flex flex-wrap items-baseline gap-x-1 gap-y-0.5 text-sm leading-6">
+          {plies.map((ply, index) => renderInlinePly({ ply, index }))}
         </div>
-      ))}
+      ) : (
+        rows.map((r) => (
+          <div key={r.num} className="flex items-start gap-2 py-0.5 border-b border-zinc-800/40 last:border-0 text-sm">
+            <span className="font-mono text-zinc-600 w-7 shrink-0 text-right pt-px">{r.num}.</span>
+            <div className="flex-1 min-w-0">{renderCell(r.w)}</div>
+            <div className="flex-1 min-w-0">{renderCell(r.b)}</div>
+          </div>
+        ))
+      )}
       <div ref={endRef} />
     </div>
   );

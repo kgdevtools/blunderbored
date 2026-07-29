@@ -7,6 +7,7 @@ export interface ClockData {
   remaining: number[];          // seconds left after each ply, aligned to moveIndex
   spent: (number | null)[];     // seconds spent on each ply (null where unknown)
   increment: number;            // seconds added per move (from TimeControl)
+  base: number;                 // starting seconds on the clock (from TimeControl)
 }
 
 export function parseClocks(pgn: string): ClockData | null {
@@ -17,10 +18,14 @@ export function parseClocks(pgn: string): ClockData | null {
   }
   if (remaining.length === 0) return null;
 
-  // Increment from [TimeControl "base+inc"].
+  // Base + increment from [TimeControl "base+inc"] (bare "base" has no '+').
+  let base = 0;
   let increment = 0;
-  const tc = pgn.match(/\[TimeControl\s+"(\d+)\+(\d+)"\]/);
-  if (tc) increment = Number(tc[2]);
+  const tc = pgn.match(/\[TimeControl\s+"(\d+)(?:\+(\d+))?"\]/);
+  if (tc) {
+    base = Number(tc[1]);
+    increment = Number(tc[2] ?? 0);
+  }
 
   // Time spent on ply i = (same side's previous clock) − (this clock) + increment.
   // Same side is two plies back. First two plies have no prior, so null.
@@ -30,7 +35,7 @@ export function parseClocks(pgn: string): ClockData | null {
     return Math.max(0, prev - r + increment);
   });
 
-  return { remaining, spent, increment };
+  return { remaining, spent, increment, base };
 }
 
 // PGN [%clk] form: always H:MM:SS (hours not zero-padded), e.g. "0:09:58".

@@ -120,7 +120,7 @@ export function selectCriticals(
 
 // ── Sacrifice detection (SEE-lite over the engine PV) ────────────────────────
 
-const PIECE_CP: Record<string, number> = { p: 100, n: 300, b: 300, r: 500, q: 900, k: 0 };
+export const PIECE_CP: Record<string, number> = { p: 100, n: 300, b: 300, r: 500, q: 900, k: 0 };
 
 // Mover's material balance (mover − opponent), in cp.
 function materialBalance(chess: Chess, mover: 'w' | 'b'): number {

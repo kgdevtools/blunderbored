@@ -1,6 +1,6 @@
 'use client';
 import { useState, useCallback, useRef } from 'react';
-import { analyseGame, GameReview, ReviewedMove, ReviewLogEvent } from '@/lib/analysis';
+import { analyseGame, GameReview, ReviewedMove, ReviewLogEvent, LiveMoveEvent } from '@/lib/analysis';
 import { loadStoredReview, saveReviewForPgn } from '@/lib/reviewStore';
 import { sanitizePgn } from '@/lib/gameTree';
 import { parsePgnHeaders } from '@/lib/pgnImport';
@@ -20,6 +20,8 @@ export interface UseGameReviewerReturn {
   error:        string | null;
   progress:     GameReviewerProgress;
   logs:         ReviewLogEvent[];   // structured run log, streamed while analysing
+  moveEvents:   LiveMoveEvent[];    // per-move live analysis stream (humanized log + bg replay)
+  analysisStartedAt: number | null; // Date.now() when the current run began (drives the modal timer)
   originalPgn:  string | null;
   headers:      Record<string, string>;
 
@@ -52,6 +54,8 @@ export function useGameReviewer(): UseGameReviewerReturn {
   const [originalPgn, setOriginalPgn] = useState<string | null>(null);
   const [headers, setHeaders]         = useState<Record<string, string>>({});
   const [logs, setLogs]               = useState<ReviewLogEvent[]>([]);
+  const [moveEvents, setMoveEvents]   = useState<LiveMoveEvent[]>([]);
+  const [analysisStartedAt, setAnalysisStartedAt] = useState<number | null>(null);
   const [fromStore, setFromStore]     = useState(false);
 
   // Increments on every new loadPgn call so stale async results are discarded
@@ -69,6 +73,8 @@ export function useGameReviewer(): UseGameReviewerReturn {
     setCurrentMoveIndex(-1);
     setProgress({ phase: 'scan', current: 0, total: 0 });
     setLogs([]);
+    setMoveEvents([]);
+    setAnalysisStartedAt(Date.now());
 
     // Library short-circuit: an up-to-date stored review for this exact
     // movetext skips the engine entirely.
@@ -97,6 +103,9 @@ export function useGameReviewer(): UseGameReviewerReturn {
         },
         (e) => {
           if (analysisIdRef.current === id) setLogs((prev) => [...prev, e]);
+        },
+        (m) => {
+          if (analysisIdRef.current === id) setMoveEvents((prev) => [...prev, m]);
         },
       );
       if (analysisIdRef.current === id) {
@@ -176,6 +185,8 @@ export function useGameReviewer(): UseGameReviewerReturn {
     error,
     progress,
     logs,
+    moveEvents,
+    analysisStartedAt,
     originalPgn,
     headers,
     fromStore,

@@ -225,7 +225,7 @@ export function BoardEditor({ fen, onFenChange, orientation, onFlip, ply, maxBoa
         {showMenu && (
           <div
             ref={menuRef}
-            className="absolute top-full right-0 mt-1 z-50 bg-zinc-800 border border-zinc-600 rounded shadow-xl py-1 min-w-[190px] text-sm"
+            className="absolute bottom-full right-0 mb-1 z-50 bg-zinc-800 border border-zinc-600 rounded shadow-xl py-1 min-w-[190px] text-sm"
           >
             <div className={sectionLabel}>Position</div>
             <button className={menuItem} onClick={runAndClose(copyFen)}>Copy FEN</button>

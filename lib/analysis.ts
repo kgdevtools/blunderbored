@@ -47,6 +47,15 @@ export interface ReviewedMove {
   evalAfter:    number;
   bestMoveSan:  string;   // '' when played move = best
   bestMoveUci:  string;
+  // The engine's full principal variation from fenBefore (UCI), best move
+  // first — the winning line. Stored so puzzle extraction can replay a real
+  // solution VARIATION instead of a single move. Optional: v2 stored reviews
+  // lack it (schema bump below invalidates them).
+  bestLineUci?: string[];
+  // The deep pass's second-best line (only present where pass 2 ran, i.e.
+  // critical moves — which is exactly the set the puzzle move picker offers).
+  // Optional: v3 stored reviews lack it.
+  bestLineUci2?: string[];
   quality:      MoveQuality;
   cpLoss:       number;   // >= 0, from moving side's perspective
   winPctLoss:   number;   // 0–100
@@ -71,7 +80,7 @@ export interface ReviewMeta {
   deepDepth:   number;
   generatedAt: number;
 }
-export const REVIEW_SCHEMA_VERSION = 2;
+export const REVIEW_SCHEMA_VERSION = 4; // v4: ReviewedMove.bestLineUci2 (second variation)
 
 export interface GameReview {
   moves:        ReviewedMove[];
@@ -96,6 +105,27 @@ export interface ReviewProgress {
   total:   number;
 }
 export type ReviewProgressFn = (p: ReviewProgress) => void;
+
+// A move whose analysis just completed, streamed live while the review runs —
+// drives the humanized run log ("26. Bh4 ! +1.3 Best") and the background
+// board replay (position + glyph + best-move arrow) behind the modal.
+// Quality here is PROVISIONAL (book detection and the full classifier run at
+// the end); deep-pass refinements re-emit the same moveIndex with phase 'deep'.
+export interface LiveMoveEvent {
+  ts:          number;             // ms since analysis start
+  phase:       'scan' | 'deep';
+  moveIndex:   number;             // ply index (0-based)
+  moveNum:     number;             // full-move number (1-based)
+  color:       'w' | 'b';
+  san:         string;
+  fenBefore:   string;
+  fenAfter:    string;
+  evalAfterCp: number;             // White-POV
+  quality:     MoveQuality;
+  bestUci:     string;             // engine's best move from fenBefore
+  bestLineSan: string[];           // best line as SANs (display-trimmed)
+}
+export type ReviewMoveFn = (m: LiveMoveEvent) => void;
 
 // ── Engine budget ─────────────────────────────────────────────────────────────
 // Pass 1 scans every position shallow/single-line in REVERSE order (the
@@ -143,6 +173,25 @@ function uciToSan(fen: string, uci: string): string {
   }
 }
 
+// Convert an engine PV (UCI list) to SANs, stopping at the first illegal move
+// (truncated/corrupt PVs happen on interrupted searches).
+function pvToSan(fen: string, pv: string[], maxPlies = 8): string[] {
+  const sans: string[] = [];
+  try {
+    const chess = new Chess(fen);
+    for (const uci of pv.slice(0, maxPlies)) {
+      const move = chess.move({
+        from: uci.slice(0, 2),
+        to: uci.slice(2, 4),
+        promotion: (uci[4] as 'q' | 'r' | 'b' | 'n' | undefined) ?? undefined,
+      });
+      if (!move) break;
+      sans.push(move.san);
+    }
+  } catch { /* stop at first illegal */ }
+  return sans;
+}
+
 // One evaluated position. cpWhite is clamped + White-POV; mateForMover is the
 // engine's mate distance from the side-to-move's POV (0 = side to move IS
 // checkmated — synthesized, never engine-reported).
@@ -151,7 +200,10 @@ interface EvalPoint {
   mateForMover: number | null;
   bestUci:      string;
   pv:           string[];
-  line2?:       { cpWhite: number; mateForMover: number | null };
+  // pv here (unlike the top line's `pv` above) is only ever populated by the
+  // deep pass (MultiPV 2) — the puzzle-generation move-variation picker's
+  // second option, when one exists.
+  line2?:       { cpWhite: number; mateForMover: number | null; pv: string[] };
   depth:        number;
   unscored?:    boolean;
   synthetic?:   boolean;
@@ -166,7 +218,7 @@ function toEvalPoint(lines: EngineMultiLine[], fen: string, depth: number): Eval
     bestUci:      top.pv[0] ?? '',
     pv:           top.pv,
     line2: second
-      ? { cpWhite: toWhiteCp(clampCp(second), fen), mateForMover: second.mate }
+      ? { cpWhite: toWhiteCp(clampCp(second), fen), mateForMover: second.mate, pv: second.pv }
       : undefined,
     depth,
   };
@@ -199,6 +251,7 @@ export async function analyseGame(
   pgn: string,
   onProgress?: ReviewProgressFn,
   onLog?: ReviewLogFn,
+  onMove?: ReviewMoveFn,
 ): Promise<GameReview> {
   const t0 = performance.now();
   const log = (level: ReviewLogEvent['level'], msg: string) => {
@@ -230,6 +283,35 @@ export async function analyseGame(
 
   log('info', `parsed ${moves.length} moves (${total} positions) · scan d${PASS1_DEPTH} → deep d${PASS2_DEPTH}/pv${PASS2_MULTIPV} · book: ${bookSrc}`);
 
+  // Emit a live per-move event once BOTH endpoints of move i are evaluated.
+  // Pass 1 runs in reverse, so when position i lands, position i+1 already
+  // has — every scanned position completes exactly one move (except the last).
+  const emitMove = (i: number, phase: 'scan' | 'deep') => {
+    if (!onMove || i < 0 || i >= moves.length) return;
+    const before = points[i];
+    const after = points[i + 1];
+    if (!before || !after || before.unscored || after.unscored) return;
+    const m = moves[i];
+    const color = m.color as 'w' | 'b';
+    const playedUci = m.from + m.to + (m.promotion ?? '');
+    const { winPctLoss } = winPctLossForSide(before.cpWhite, after.cpWhite, color);
+    const playedIsBest = before.bestUci !== '' && before.bestUci === playedUci;
+    onMove({
+      ts: Math.round(performance.now() - t0),
+      phase,
+      moveIndex: i,
+      moveNum: Math.floor(i / 2) + 1,
+      color,
+      san: m.san,
+      fenBefore: fens[i],
+      fenAfter: fens[i + 1],
+      evalAfterCp: after.cpWhite,
+      quality: playedIsBest ? 'best' : classifyQuality(Math.max(0, winPctLoss)),
+      bestUci: before.bestUci,
+      bestLineSan: pvToSan(fens[i], before.pv),
+    });
+  };
+
   // ── Pass 1: reverse shallow scan ──────────────────────────────────────────
   const points: EvalPoint[] = new Array(total);
   let evalFailures = 0;
@@ -255,6 +337,7 @@ export async function analyseGame(
       }
     }
     if (lines) points[i] = toEvalPoint(lines, fens[i], PASS1_DEPTH);
+    emitMove(i, 'scan'); // move i just became fully evaluated (reverse order)
     if (done % 10 === 0 || done === total) {
       const msPer = (performance.now() - tScan) / done;
       log('info', `scanned ${done}/${total} positions · ${msPer.toFixed(0)}ms/pos avg`);
@@ -332,6 +415,7 @@ export async function analyseGame(
     if (points[i].depth < PASS2_DEPTH && !points[i].unscored) {
       log('warn', `deep pass degraded on position ${i} (kept d${points[i].depth})`);
     }
+    emitMove(i, 'deep'); // refined verdict for the move played from this position
     if (deepDone % 10 === 0 || deepDone === deepPositions.length) {
       const msPer = (performance.now() - tDeep) / deepDone;
       log('info', `deep ${deepDone}/${deepPositions.length} positions · ${msPer.toFixed(0)}ms/pos avg`);
@@ -405,6 +489,8 @@ export async function analyseGame(
       evalAfter,
       bestMoveSan,
       bestMoveUci,
+      bestLineUci:  before.pv.length > 0 ? [...before.pv] : undefined,
+      bestLineUci2: before.line2?.pv?.length ? [...before.line2.pv] : undefined,
       quality,
       cpLoss,
       winPctLoss:   wpl,

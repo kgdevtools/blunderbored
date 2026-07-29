@@ -2,14 +2,21 @@
 import { useMemo, type FC } from 'react';
 import { Chess } from 'chess.js';
 import type { CustomSquareProps } from '@zoendev/react-chessboard/dist/chessboard/types/index';
-import type { ReviewedMove } from '@/lib/analysis';
 import { QUALITY_META, type MoveQuality } from '@/lib/accuracy';
+
+// The minimal slice of a move this hook needs — satisfied by ReviewedMove and
+// by the live analysis stream's LiveMoveEvent (mapped by the shells).
+export interface GlyphMove {
+  fenBefore: string;
+  moveSan: string;
+  quality: MoveQuality;
+}
 
 // Renders the move-quality glyph (per lib/accuracy.ts's QUALITY_META) as a
 // small badge in the corner of the square a move landed on — shared between
 // ReviewerShell and PuzzleGeneratorShell, both of which page through a
 // GameReview move-by-move on the same Chessboard component.
-export function useQualityGlyphSquare(move: ReviewedMove | null): FC<CustomSquareProps> | undefined {
+export function useQualityGlyphSquare(move: GlyphMove | null): FC<CustomSquareProps> | undefined {
   const glyphSquare = useMemo(() => {
     if (!move || move.quality === 'book') return null;
     try {

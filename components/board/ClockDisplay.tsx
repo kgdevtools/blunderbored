@@ -6,7 +6,7 @@ import { formatSeconds } from '@/lib/clock';
 // White's clock = the most recent White move's remaining time at/under the
 // current node; likewise Black. Walking up the parent chain handles the current
 // node being either colour (and positions before either side has a clock).
-function clocksAt(node: GameNode, nodeMeta: Map<string, NodeMeta>): { white?: number; black?: number } {
+export function clocksAt(node: GameNode, nodeMeta: Map<string, NodeMeta>): { white?: number; black?: number } {
   let white: number | undefined;
   let black: number | undefined;
   let cur: GameNode | null = node;
@@ -21,15 +21,18 @@ function clocksAt(node: GameNode, nodeMeta: Map<string, NodeMeta>): { white?: nu
   return { white, black };
 }
 
-function ClockCell({ time, active, align }: { time?: number; active: boolean; align: 'left' | 'right' }) {
-  const text = time !== undefined ? formatSeconds(time) : '-:--';
+// A single player's clock, always right-aligned — rides inside that player's
+// name row (see BoardShell's PlayerRow) rather than a shared two-up strip.
+// Renders nothing when this side has no clock reading (e.g. non-Lichess PGN).
+export function ClockChip({ time, active }: { time?: number; active: boolean }) {
+  if (time === undefined) return null;
+  const text = formatSeconds(time);
   // All-segments-on backdrop, so unlit segments stay faintly visible (LCD look).
   const ghost = text.replace(/\d/g, '8');
   return (
     <div
       className={[
-        'flex-1 px-2.5 py-1.5 rounded-[2px] flex items-center bg-black border transition-colors',
-        align === 'right' ? 'justify-end' : 'justify-start',
+        'shrink-0 px-2.5 py-1 rounded-[2px] flex items-center justify-end bg-black border transition-colors',
         active ? 'border-zinc-500' : 'border-zinc-800',
       ].join(' ')}
     >
@@ -42,24 +45,6 @@ function ClockCell({ time, active, align }: { time?: number; active: boolean; al
           {text}
         </span>
       </span>
-    </div>
-  );
-}
-
-// Renders nothing when the game carries no clock data, so the strip simply
-// disappears for games without [%clk] (e.g. non-Lichess PGNs).
-export function ClockDisplay({ current, nodeMeta }: { current: GameNode; nodeMeta: Map<string, NodeMeta> }) {
-  const { white, black } = clocksAt(current, nodeMeta);
-  if (white === undefined && black === undefined) return null;
-
-  // Side to move at the current position = opposite of the move just played
-  // (White to move at the start).
-  const toMove: 'w' | 'b' = current.move ? (current.move.color === 'w' ? 'b' : 'w') : 'w';
-
-  return (
-    <div className="flex items-stretch gap-1 text-xs font-mono mb-2" aria-label="Clock times">
-      <ClockCell time={white} active={toMove === 'w'} align="left" />
-      <ClockCell time={black} active={toMove === 'b'} align="right" />
     </div>
   );
 }

@@ -22,6 +22,14 @@ export function gameFormat(headers: Record<string, string>): GameFormat {
   return 'Classical';
 }
 
+// The increment (seconds added per move) from a TimeControl header ("180+2"
+// -> 2). 0 when absent/non-standard.
+export function timeControlIncrement(headers: Record<string, string>): number {
+  const tc = headers.TimeControl?.trim();
+  const m = tc?.match(/^(\d+)(?:\+(\d+))?$/);
+  return m ? Number(m[2] ?? 0) : 0;
+}
+
 // Parse a PGN Date tag ('YYYY.MM.DD', with '??' allowed for unknown parts) into
 // a timestamp. Unknown month/day default to January / the 1st. Returns null when
 // the year is unknown, so callers can treat the date as absent.

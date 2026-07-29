@@ -7,7 +7,9 @@ import { useState, useCallback, useMemo, useEffect, useLayoutEffect, useRef, typ
 const useMeasureEffect = typeof window !== 'undefined' ? useLayoutEffect : useEffect;
 import { Chessboard } from '@zoendev/react-chessboard';
 import type { Square as CbSquare, Piece, PromotionPieceOption, CustomSquareProps } from '@zoendev/react-chessboard/dist/chessboard/types/index';
+import { Chess } from 'chess.js';
 import type { Square, PieceSymbol } from 'chess.js';
+import { PIECE_CP } from '@/lib/classification';
 import { useBoardGame } from '@/hooks/useBoardGame';
 import { useBoardEngine } from '@/hooks/useBoardEngine';
 import { EvalBar } from './EvalBar';
@@ -17,10 +19,11 @@ import { BoardControls } from './BoardControls';
 import { FenBar } from './FenBar';
 import { GameInfoModal } from './GameInfoModal';
 import { LibraryModal } from './LibraryModal';
-import { ClockDisplay } from './ClockDisplay';
+import { clocksAt, ClockChip } from './ClockDisplay';
 import { DecorationMenu, type DecorationCommit, type EditingKind } from './DecorationMenu';
 import { SavePositionDialog } from '@/components/blunderable/SavedPositions';
 import { saveGame, updateGame, serializeBoardState, checkDuplicate, saveDraft, loadDraft, clearDraft, getAdjacentGame } from '@/lib/library';
+import { gameFormat, timeControlIncrement } from '@/lib/gameMeta';
 import type { LibraryGame } from '@/lib/db';
 import {
   ARROW_RENDER_COLOR,
@@ -32,58 +35,55 @@ import {
 } from '@/lib/decorations';
 import { NAG_BY_CODE } from '@/lib/nags';
 
-// ─── Game info header ─────────────────────────────────────────────────────────
+// ─── Player row (name + clock, one per side) ───────────────────────────────────
 
-// Game-data and Library actions now live in the ··· menu. This component just
-// renders the rich player card when the loaded game has player metadata, and
-// stays out of the way otherwise. Clicking the card opens the editor.
-function GameInfoHeader({
-  headers,
-  onOpen,
+// One player's name/rating + clock, riding directly above or below the board
+// (lichess-mobile style) rather than both sides bundled in a side-panel card.
+// The clock is always right-aligned regardless of which side of the board
+// this row represents. Clicking opens the game-data editor; Event/Date (when
+// present) rides along on the top row only, so it isn't duplicated.
+function PlayerRow({
+  color, headers, clock, active, showEventDate, onOpen,
 }: {
+  color: 'w' | 'b';
   headers: Record<string, string>;
+  clock?: number;
+  active: boolean;
+  showEventDate: boolean;
   onOpen: () => void;
 }) {
-  const { White: white, Black: black, WhiteElo: wElo, BlackElo: bElo, Result: result, Event: event, Date: date } = headers;
-  const hasPlayers = white || black;
-
-  if (!hasPlayers) return null;
+  const name = color === 'w' ? headers.White : headers.Black;
+  const elo = color === 'w' ? headers.WhiteElo : headers.BlackElo;
+  const { Event: event, Date: date } = headers;
+  if (!name && clock === undefined && !(showEventDate && (event || date))) return null;
 
   return (
-    <div className="w-full mb-2 rounded-sm overflow-hidden border border-zinc-700/60 hover:border-zinc-600 transition-colors">
-      {/* Player row — clickable to edit game data */}
+    <div className="w-full mb-1.5 last:mb-0 rounded-sm overflow-hidden">
       <div
         role="button"
         tabIndex={0}
         onClick={onOpen}
         onKeyDown={(e) => e.key === 'Enter' && onOpen()}
-        className="flex items-stretch cursor-pointer min-w-0"
+        className={[
+          'flex items-center justify-between gap-2 cursor-pointer min-w-0 px-2.5 py-2 transition-colors border',
+          color === 'w'
+            ? 'bg-zinc-100 hover:bg-white border-zinc-300'
+            : 'bg-zinc-950 hover:bg-zinc-900 border-zinc-800',
+        ].join(' ')}
       >
-        {/* White */}
-        <div className="flex-1 min-w-0 bg-zinc-100 flex items-center gap-1.5 px-2.5 py-2.5">
-          <span className="text-sm font-bold text-zinc-900 truncate">{white ?? '?'}</span>
-          {wElo && <span className="text-xs text-zinc-500 tabular-nums shrink-0">{wElo}</span>}
-        </div>
-
-        {/* Result */}
-        <div className="px-3 flex items-center justify-center bg-zinc-800 shrink-0">
-          <span className="text-sm font-bold text-cyan-400 tabular-nums">{result ?? '–'}</span>
-        </div>
-
-        {/* Black */}
-        <div className="flex-1 min-w-0 bg-zinc-950 flex items-center justify-end gap-1.5 px-2.5 py-2.5">
-          {bElo && <span className="text-xs text-zinc-500 tabular-nums shrink-0">{bElo}</span>}
-          <span className="text-sm font-bold text-zinc-100 truncate">{black ?? '?'}</span>
-        </div>
+        <span className={`flex items-baseline gap-1.5 min-w-0 truncate text-sm font-bold ${color === 'w' ? 'text-zinc-900' : 'text-zinc-100'}`}>
+          <span className="truncate">{name ?? '?'}</span>
+          {elo && <span className="text-xs font-normal tabular-nums text-zinc-500 shrink-0">{elo}</span>}
+        </span>
+        {clock !== undefined && <ClockChip time={clock} active={active} />}
       </div>
 
-      {/* Event / Date row */}
-      {(event || date) && (
+      {showEventDate && (event || date) && (
         <div
           role="button"
           tabIndex={-1}
           onClick={onOpen}
-          className="flex items-center justify-between px-2.5 py-1.5 bg-zinc-800/40 border-t border-zinc-700/40 cursor-pointer"
+          className="flex items-center justify-between px-2.5 py-1 bg-zinc-800/40 border-x border-b border-zinc-700/40 cursor-pointer"
         >
           <span className="text-xs font-semibold text-zinc-400 truncate pr-2">{event ?? ''}</span>
           <span className="text-xs font-semibold text-zinc-400 shrink-0 tabular-nums">{date ?? ''}</span>
@@ -160,6 +160,33 @@ interface BoardShellProps {
 export function BoardShell({ initialPgn, initialFen }: BoardShellProps) {
   const game = useBoardGame();
   const engine = useBoardEngine(game.currentFen);
+
+  // Eval-bar source: live engine when it's on, else the current node's stored
+  // [%eval] token (imported PGNs / reviewer-enriched games carry these — the
+  // bar used to ignore them and sit frozen at 50% unless the engine ran).
+  // PGN [%eval] is White-POV by spec: "+0.24" → cp, "#3"/"#-2" → mate.
+  const nodeEval = useMemo((): { cp: number; mate: number | null } | null => {
+    const raw = game.nodeMeta.get(game.current.id)?.evalText;
+    if (!raw) return null;
+    if (raw.startsWith('#')) {
+      const m = parseInt(raw.slice(1), 10);
+      if (!Number.isFinite(m)) return null;
+      return { cp: m >= 0 ? 10000 : -10000, mate: m };
+    }
+    const n = parseFloat(raw);
+    return Number.isFinite(n) ? { cp: Math.round(n * 100), mate: null } : null;
+  }, [game.nodeMeta, game.current.id]);
+
+  const barScore = engine.enabled ? engine.evalScore : (nodeEval?.cp ?? null);
+  const barMate = engine.enabled ? engine.evalMate : (nodeEval?.mate ?? null);
+
+  // Player rows: whichever colour sits at the bottom of the board (matching
+  // boardOrientation below) gets the row below the board; the other rides
+  // above it.
+  const bottomColor: 'w' | 'b' = game.flipped ? 'b' : 'w';
+  const topColor: 'w' | 'b' = game.flipped ? 'w' : 'b';
+  const clocks = clocksAt(game.current, game.nodeMeta);
+  const sideToMoveColor = sideToMove(game.currentFen);
 
   const initApplied = useRef(false);
   // Guards the autosave effect: it must not run until the mount-time draft
@@ -243,6 +270,9 @@ export function BoardShell({ initialPgn, initialFen }: BoardShellProps) {
 
   // ── Game info modal ────────────────────────────────────────────────────────
   const [showGameInfo, setShowGameInfo] = useState(false);
+
+  // ── Engine visibility (EvalBar + EngineLines) — hidden by default ──────────
+  const [showEngine, setShowEngine] = useState(false);
 
   // ── Save current position to practice (/blunderable) ────────────────────────
   const [showSavePosition, setShowSavePosition] = useState(false);
@@ -687,6 +717,39 @@ export function BoardShell({ initialPgn, initialFen }: BoardShellProps) {
         };
       });
     }
+
+    // ── Check + hanging-piece (threat) highlighting ─────────────────────────
+    try {
+      const chess = new Chess(game.currentFen);
+      if (chess.isCheck()) {
+        const kingColor = chess.turn();
+        for (const row of chess.board()) {
+          for (const sq of row) {
+            if (sq && sq.type === 'k' && sq.color === kingColor) {
+              styles[sq.square] = { ...styles[sq.square], backgroundColor: 'rgba(220, 38, 38, 0.55)' };
+            }
+          }
+        }
+      }
+      // A piece is "hanging" when it's attacked and either wholly undefended,
+      // or the cheapest attacker is worth less than it — a losing trade even
+      // after a recapture. Cheap 2-ply heuristic (attackers() + PIECE_CP), not
+      // full SEE.
+      for (const row of chess.board()) {
+        for (const sq of row) {
+          if (!sq) continue;
+          const attackers = chess.attackers(sq.square, sq.color === 'w' ? 'b' : 'w');
+          if (attackers.length === 0) continue;
+          const defenders = chess.attackers(sq.square, sq.color);
+          const cheapestAttacker = Math.min(...attackers.map((a) => PIECE_CP[chess.get(a)?.type ?? 'p']));
+          const hanging = defenders.length === 0 || cheapestAttacker < PIECE_CP[sq.type];
+          if (hanging) {
+            styles[sq.square] = { ...styles[sq.square], backgroundColor: 'rgba(234, 88, 12, 0.35)' };
+          }
+        }
+      }
+    } catch { /* malformed FEN mid-edit — skip threat highlighting for this render */ }
+
     return styles;
   }, [game.current, selectedSq, legalDests]);
 
@@ -773,17 +836,26 @@ export function BoardShell({ initialPgn, initialFen }: BoardShellProps) {
       {/* ── Main layout: stacked on mobile, side-by-side on desktop ─────── */}
       <div className="flex flex-col lg:flex-row gap-3 lg:items-start">
 
-        {/* Eval bar + board */}
+        {/* Player row above, eval bar + board, player row below — lichess-mobile
+            style. Board orientation decides which side rides on top. */}
+        <div className="flex flex-col shrink-0" style={{ width: 'min(100vw, 90vh, 560px)', maxWidth: '100%' }}>
+          <PlayerRow
+            color={topColor}
+            headers={game.headers}
+            clock={topColor === 'w' ? clocks.white : clocks.black}
+            active={sideToMoveColor === topColor}
+            showEventDate
+            onOpen={() => setShowGameInfo(true)}
+          />
         {/* Outer wrapper has CSS-intrinsic dimensions so getBoundingClientRect()
             always returns a real value regardless of device or SSR state. */}
         <div
-          className="flex gap-px lg:gap-1.5 items-start shrink-0"
-          style={{ width: 'min(100vw, 90vh, 560px)', maxWidth: '100%' }}
+          className="flex gap-px lg:gap-1.5 items-start"
         >
-          {boardWidth > 0 && (
+          {showEngine && boardWidth > 0 && (
             <EvalBar
-              score={engine.evalScore}
-              mate={engine.lines[0]?.mate}
+              score={barScore}
+              mate={barMate}
               height={boardWidth}
             />
           )}
@@ -883,6 +955,15 @@ export function BoardShell({ initialPgn, initialFen }: BoardShellProps) {
             )}
           </div>
         </div>
+          <PlayerRow
+            color={bottomColor}
+            headers={game.headers}
+            clock={bottomColor === 'w' ? clocks.white : clocks.black}
+            active={sideToMoveColor === bottomColor}
+            showEventDate={false}
+            onOpen={() => setShowGameInfo(true)}
+          />
+        </div>
 
         {/* Right panel */}
         <div
@@ -910,11 +991,15 @@ export function BoardShell({ initialPgn, initialFen }: BoardShellProps) {
               onPrevGame={() => loadAdjacent(-1)}
               onNextGame={() => loadAdjacent(1)}
               gameNavEnabled={!!loadedFromLibraryId && !!loadedFromFolderId}
+              showEngine={showEngine}
+              onToggleEngine={() => setShowEngine((v) => !v)}
             />
           </div>
 
-          {/* Engine lines — on desktop they sit just above the controls at the
-              bottom of the panel (order-3); on mobile they follow the controls. */}
+          {/* Engine lines — hidden by default (toggle in the ··· menu); on
+              desktop they sit just above the controls at the bottom of the
+              panel (order-3); on mobile they follow the controls. */}
+          {showEngine && (
           <div className="shrink-0 mt-1.5 lg:order-3 lg:mt-0">
             <EngineLines
               lines={engine.lines}
@@ -925,16 +1010,7 @@ export function BoardShell({ initialPgn, initialFen }: BoardShellProps) {
               currentFen={game.currentFen}
             />
           </div>
-
-          {/* Game metadata — desktop: top of the panel above the moves list (order-1) */}
-          <div className="shrink-0 lg:order-1">
-            <GameInfoHeader
-              headers={game.headers}
-              onOpen={() => setShowGameInfo(true)}
-            />
-            {/* Clock strip — only renders when the PGN carried [%clk] times */}
-            <ClockDisplay current={game.current} nodeMeta={game.nodeMeta} />
-          </div>
+          )}
 
           {/* Moves list — capped height with its own scroll so it never grows
               unbounded on mobile; fills the remaining panel height on desktop. */}
@@ -951,6 +1027,8 @@ export function BoardShell({ initialPgn, initialFen }: BoardShellProps) {
               nags={game.nags}
               onSetNags={game.setNodeNags}
               gameId={loadedFromLibraryId}
+              timeFormat={gameFormat(game.headers)}
+              timeIncrement={timeControlIncrement(game.headers)}
             />
           </div>
         </div>

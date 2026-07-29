@@ -8,31 +8,56 @@ const useMeasureEffect = typeof window !== 'undefined' ? useLayoutEffect : useEf
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { Chess } from 'chess.js';
+import { nanoid } from 'nanoid';
 import { Chessboard } from '@zoendev/react-chessboard';
 import type { Square as CbSquare } from '@zoendev/react-chessboard/dist/chessboard/types/index';
 import { useGameReviewer } from '@/hooks/useGameReviewer';
 import { useQualityGlyphSquare } from '@/hooks/useQualityGlyphSquare';
-import { PASS1_DEPTH, PASS2_DEPTH, PASS2_MULTIPV } from '@/lib/analysis';
+import { PASS1_DEPTH, PASS2_DEPTH, PASS2_MULTIPV, type ReviewedMove } from '@/lib/analysis';
 import { EvalBar } from '@/components/board/EvalBar';
 import { buildEnrichedPgn } from '@/lib/reviewToBoardPgn';
-import { AnalysisModal } from '@/components/game-reviewer/AnalysisModal';
-import { GameSummary } from '@/components/game-reviewer/GameSummary';
+import { AnalysisModal } from '@/components/analysis/AnalysisModal';
+import { GameSummary } from '@/components/analysis/GameSummary';
+import { ReportModal } from '@/components/graph/ReportModal';
+import { GameInfoModal } from '@/components/board/GameInfoModal';
 import { PuzzleMoveList } from './PuzzleMoveList';
+import { PuzzleBatchModal } from './PuzzleBatchModal';
+import { buildDraftPuzzle, playedMoveUci } from '@/lib/puzzleSolution';
 import { DevConsole } from '@/components/dev/DevConsole';
 import { devlog } from '@/lib/devlog';
-import { generatePuzzlesFromReview, type BlunderSeverityFilter, type GeneratePuzzlesResult } from '@/lib/tacticsGenerator';
-import type { Puzzle } from '@/lib/db';
+import { db, type Puzzle } from '@/lib/db';
 
-const SEVERITY_OPTIONS: { value: BlunderSeverityFilter; label: string }[] = [
-  { value: 'blunder-only', label: 'Blunders only' },
-  { value: 'mistake-and-blunder', label: 'Mistakes + blunders' },
-  { value: 'all-flagged', label: 'All flagged moves (incl. inaccuracies/misses)' },
-];
-
-// ── Nav controls (Start/Prev/Next/End/Flip + Open in Board) ───────────────────
+// ── Nav controls — mirrors the board/game-reviewer BoardControls row:
+// ⟨⟨ ⟨ ▶ ⟩ ⟩⟩ ⇅ with a 1s replay, same styling. Report/Open in Board/Generate
+// Puzzles/Game Data/Download all live in the "···" menu so the row itself
+// stays short enough for mobile. ────────────────────────────────────────────
 
 const btn =
-  'flex-1 py-1.5 rounded bg-zinc-700 hover:bg-zinc-600 disabled:opacity-30 disabled:cursor-not-allowed text-sm transition-colors';
+  'flex-1 py-1.5 rounded-sm bg-zinc-700 hover:bg-zinc-600 disabled:opacity-30 disabled:cursor-not-allowed text-sm transition-colors';
+
+function PlayIcon() {
+  return (
+    <svg className="inline-block shrink-0" width={14} height={14} viewBox="0 0 24 24" fill="currentColor">
+      <polygon points="6 4 20 12 6 20 6 4" />
+    </svg>
+  );
+}
+function PauseIcon() {
+  return (
+    <svg className="inline-block shrink-0" width={14} height={14} viewBox="0 0 24 24" fill="currentColor">
+      <rect x="6" y="4" width="4" height="16" rx="1" /><rect x="14" y="4" width="4" height="16" rx="1" />
+    </svg>
+  );
+}
+
+function DownloadIcon() {
+  return (
+    <svg className="inline-block shrink-0" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+      <polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" />
+    </svg>
+  );
+}
 
 interface PuzzleNavControlsProps {
   onStart: () => void;
@@ -44,11 +69,56 @@ interface PuzzleNavControlsProps {
   canNext: boolean;
   onOpenInBoard: () => void;
   canOpenInBoard: boolean;
+  onOpenReport: () => void;
+  canOpenReport: boolean;
+  onShowGameInfo: () => void;
+  onDownload: () => void;
+  onToggleGenerate: () => void;
+  puzzleMode: boolean;
+  canGenerate: boolean;
 }
 
 function PuzzleNavControls({
   onStart, onPrev, onNext, onEnd, onFlip, canPrev, canNext, onOpenInBoard, canOpenInBoard,
+  onOpenReport, canOpenReport, onShowGameInfo, onDownload, onToggleGenerate, puzzleMode, canGenerate,
 }: PuzzleNavControlsProps) {
+  const [showMenu, setShowMenu] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const menuTriggerRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    if (!showMenu) return;
+    const close = (e: MouseEvent) => {
+      if (menuRef.current?.contains(e.target as Node)) return;
+      if (menuTriggerRef.current?.contains(e.target as Node)) return;
+      setShowMenu(false);
+    };
+    window.addEventListener('mousedown', close);
+    return () => window.removeEventListener('mousedown', close);
+  }, [showMenu]);
+
+  // Replay (auto-advance), same ref pattern as BoardControls: the interval
+  // reads the latest handlers through refs so it survives re-renders.
+  const [isPlaying, setIsPlaying] = useState(false);
+  const onNextRef = useRef(onNext);
+  const canNextRef = useRef(canNext);
+  useEffect(() => { onNextRef.current = onNext; canNextRef.current = canNext; });
+
+  useEffect(() => {
+    if (!isPlaying) return;
+    const id = setInterval(() => {
+      if (!canNextRef.current) { setIsPlaying(false); return; }
+      onNextRef.current();
+    }, 1000);
+    return () => clearInterval(id);
+  }, [isPlaying]);
+
+  const toggleReplay = () => {
+    if (isPlaying) { setIsPlaying(false); return; }
+    if (!canNext) onStart();
+    setIsPlaying(true);
+  };
+
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement).tagName;
@@ -64,20 +134,74 @@ function PuzzleNavControls({
   }, [onStart, onPrev, onNext, onEnd, onFlip]);
 
   return (
-    <div className="flex gap-0.5 pt-2 border-t border-zinc-700 shrink-0">
+    <div className="relative flex gap-0.5 pt-2 border-t border-zinc-700 shrink-0">
       <button className={btn} onClick={onStart} disabled={!canPrev} title="Start (Home)">⟨⟨</button>
       <button className={btn} onClick={onPrev} disabled={!canPrev} title="Previous (←)">⟨</button>
+      <button
+        className={`${btn} grid place-items-center`}
+        onClick={toggleReplay}
+        disabled={!canNext && !canPrev}
+        title={isPlaying ? 'Pause replay' : 'Replay (1s/move)'}
+      >
+        {isPlaying ? <PauseIcon /> : <PlayIcon />}
+      </button>
       <button className={btn} onClick={onNext} disabled={!canNext} title="Next (→)">⟩</button>
       <button className={btn} onClick={onEnd} disabled={!canNext} title="End (End)">⟩⟩</button>
       <button className={btn} onClick={onFlip} title="Flip board (F)">⇅</button>
       <button
-        className="flex-none px-2.5 py-1.5 rounded bg-blue-700 hover:bg-blue-600 disabled:opacity-30 disabled:cursor-not-allowed text-sm font-medium text-white transition-colors"
-        onClick={onOpenInBoard}
-        disabled={!canOpenInBoard}
-        title={canOpenInBoard ? 'Open the analysed game in the full board' : 'Analyse a game first'}
+        ref={menuTriggerRef}
+        className="flex-none px-2 py-1.5 rounded-sm bg-zinc-700 hover:bg-zinc-600 text-sm transition-colors"
+        onClick={() => setShowMenu((v) => !v)}
+        title="More options"
       >
-        Open in Board
+        ···
       </button>
+
+      {showMenu && (
+        <div
+          ref={menuRef}
+          className="absolute bottom-full right-0 mb-1 z-50 bg-zinc-800 border border-zinc-600 rounded shadow-xl py-1 min-w-[190px] text-sm"
+        >
+          <button
+            className="flex items-center gap-2 w-full text-left px-3 py-1.5 hover:bg-zinc-700 text-zinc-200 disabled:opacity-40 disabled:cursor-not-allowed"
+            disabled={!canGenerate}
+            onClick={() => { onToggleGenerate(); setShowMenu(false); }}
+          >
+            {puzzleMode ? 'Exit Puzzle Mode' : 'Generate Puzzles'}
+          </button>
+          <div className="my-1 border-t border-zinc-700" />
+          <button
+            className="flex items-center gap-2 w-full text-left px-3 py-1.5 hover:bg-zinc-700 text-zinc-200 disabled:opacity-40 disabled:cursor-not-allowed"
+            disabled={!canOpenReport}
+            onClick={() => { onOpenReport(); setShowMenu(false); }}
+          >
+            Report
+          </button>
+          <button
+            className="flex items-center gap-2 w-full text-left px-3 py-1.5 hover:bg-zinc-700 text-zinc-200 disabled:opacity-40 disabled:cursor-not-allowed"
+            disabled={!canOpenInBoard}
+            title={canOpenInBoard ? undefined : 'Analyse a game first'}
+            onClick={() => { onOpenInBoard(); setShowMenu(false); }}
+          >
+            Open in Board
+          </button>
+          <div className="my-1 border-t border-zinc-700" />
+          <button
+            className="flex items-center gap-2 w-full text-left px-3 py-1.5 hover:bg-zinc-700 text-zinc-200"
+            onClick={() => { onShowGameInfo(); setShowMenu(false); }}
+          >
+            Game Data
+          </button>
+          <div className="my-1 border-t border-zinc-700" />
+          <button
+            className="flex items-center gap-2 w-full text-left px-3 py-1.5 hover:bg-zinc-700 text-zinc-200"
+            onClick={() => { onDownload(); setShowMenu(false); }}
+          >
+            <DownloadIcon />
+            Download PGN
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -95,11 +219,41 @@ export function PuzzleGeneratorShell({ initialPgn }: PuzzleGeneratorShellProps) 
   const [hideAnalysisModal, setHideAnalysisModal] = useState(false);
   useEffect(() => { if (reviewer.isLoading) setHideAnalysisModal(false); }, [reviewer.isLoading]);
 
-  const [severity, setSeverity] = useState<BlunderSeverityFilter>('mistake-and-blunder');
-  const [generating, setGenerating] = useState(false);
-  const [result, setResult] = useState<GeneratePuzzlesResult | null>(null);
-  const [genError, setGenError] = useState<string | null>(null);
-  const [selectedPuzzleId, setSelectedPuzzleId] = useState<string | null>(null);
+  // Report + Game Data (ported from the retired Game Reviewer page).
+  const [showReport, setShowReport] = useState(false);
+  const [showGameInfo, setShowGameInfo] = useState(false);
+  const [localHeaders, setLocalHeaders] = useState<Record<string, string>>({});
+  const [seenHeaders, setSeenHeaders] = useState(reviewer.headers);
+  if (reviewer.headers !== seenHeaders) {
+    setSeenHeaders(reviewer.headers);
+    setLocalHeaders(reviewer.headers);
+  }
+  const handleSetHeader = useCallback((key: string, value: string) => {
+    setLocalHeaders((prev) => value ? { ...prev, [key]: value } : (({ [key]: _, ...rest }) => rest)(prev));
+  }, []);
+
+  // ── Puzzle mode: highlight flagged moves; tap one to see the engine's
+  // variation(s) and add any of them to the working draft set. ──────────────
+  const [puzzleMode, setPuzzleMode] = useState(false);
+  const [expandedMoveIndex, setExpandedMoveIndex] = useState<number | null>(null);
+  const [draftMap, setDraftMap] = useState<Map<string, Puzzle>>(new Map());
+  const [showBatchModal, setShowBatchModal] = useState(false);
+  const [savedMsg, setSavedMsg] = useState<string | null>(null);
+
+  // New analysis lands (or puzzle mode turns off) → close the report and
+  // reset puzzle-picking state, adjusted during render rather than an effect.
+  const [seenReview, setSeenReview] = useState(reviewer.review);
+  if (reviewer.review !== seenReview) {
+    setSeenReview(reviewer.review);
+    setShowReport(false);
+    setPuzzleMode(false);
+    setExpandedMoveIndex(null);
+    setDraftMap(new Map());
+  }
+
+  // Standalone PGN input — lets Game Analysis be used without being launched
+  // from the Board.
+  const [pgnInput, setPgnInput] = useState(initialPgn ?? '');
 
   const initApplied = useRef(false);
   useEffect(() => {
@@ -110,7 +264,7 @@ export function PuzzleGeneratorShell({ initialPgn }: PuzzleGeneratorShellProps) 
   }, []);
 
   // ── Forward the engine-analysis run log into the shared dev console, so one
-  // place shows the whole pipeline (analysis + puzzle extraction) in order.
+  // place shows the whole pipeline in order.
   const forwardedLogCount = useRef(0);
   useEffect(() => {
     if (reviewer.logs.length < forwardedLogCount.current) forwardedLogCount.current = 0;
@@ -141,6 +295,11 @@ export function PuzzleGeneratorShell({ initialPgn }: PuzzleGeneratorShellProps) 
   }, []);
 
   // ── Board width (measured from container, no circular dependency) ──────────
+  // The container only exists once reviewer.originalPgn is set (the PGN-input
+  // screen below renders instead until then), and that flips one tick after
+  // mount — so this must re-run when it flips, not just once on mount, or
+  // containerRef.current is null on the only run and boardWidth stays 0 forever.
+  const hasGame = !!reviewer.originalPgn;
   const containerRef = useRef<HTMLDivElement>(null);
   const [boardWidth, setBoardWidth] = useState(0);
   useMeasureEffect(() => {
@@ -162,12 +321,44 @@ export function PuzzleGeneratorShell({ initialPgn }: PuzzleGeneratorShellProps) 
     const onResize = () => apply(el.getBoundingClientRect().width || Math.min(window.innerWidth * 0.9, window.innerHeight * 0.9, 560));
     window.addEventListener('resize', onResize);
     return () => window.removeEventListener('resize', onResize);
+  }, [hasGame]);
+
+  // ── Live analysis replay: while the engine works, the board replays each
+  // analysed move as its result lands (position + glyph + best-move arrow). ──
+  const liveMove = reviewer.isLoading
+    ? reviewer.moveEvents[reviewer.moveEvents.length - 1] ?? null
+    : null;
+  const shownMove = liveMove
+    ? { fenBefore: liveMove.fenBefore, moveSan: liveMove.san, quality: liveMove.quality }
+    : reviewer.currentMove;
+
+  // ── Puzzle-mode preview: inspecting a move's variation shows that
+  // (hypothetical, off-the-game-line) position on the board instead of the
+  // game's current move, until another move/variation is picked. ──────────
+  const [previewFen, setPreviewFen] = useState<string | null>(null);
+  const [previewLastMove, setPreviewLastMove] = useState<{ from: string; to: string } | null>(null);
+  const clearPreview = useCallback(() => { setPreviewFen(null); setPreviewLastMove(null); }, []);
+  const handlePreviewPosition = useCallback((fen: string, lastMove: { from: string; to: string } | null) => {
+    setPreviewFen(fen);
+    setPreviewLastMove(lastMove);
   }, []);
 
+  const boardFen = liveMove ? liveMove.fenAfter : (previewFen ?? reviewer.currentFen);
+  const barEval = liveMove ? liveMove.evalAfterCp : reviewer.currentEval;
+
   // ── Last-move highlight ────────────────────────────────────────────────────
+  const isLive = !!liveMove;
   const squareStyles = useMemo(() => {
     const styles: Record<string, Record<string, string>> = {};
-    const m = reviewer.currentMove;
+    if (!isLive && previewFen) {
+      if (previewLastMove) {
+        const tint = { backgroundColor: 'rgba(155, 199, 0, 0.41)' };
+        styles[previewLastMove.from] = tint;
+        styles[previewLastMove.to] = tint;
+      }
+      return styles;
+    }
+    const m = shownMove;
     if (!m) return styles;
     try {
       const chess = new Chess(m.fenBefore);
@@ -179,63 +370,90 @@ export function PuzzleGeneratorShell({ initialPgn }: PuzzleGeneratorShellProps) 
       }
     } catch { /* ignore */ }
     return styles;
-  }, [reviewer.currentMove?.fenBefore, reviewer.currentMove?.moveSan]);
+  }, [shownMove?.fenBefore, shownMove?.moveSan, isLive, previewFen, previewLastMove]);
 
-  // ── Puzzle bookkeeping ──────────────────────────────────────────────────────
-  const puzzlesByMoveIndex = useMemo(() => {
-    const map = new Map<number, Puzzle[]>();
-    if (!result) return map;
-    for (const p of result.puzzles) {
-      if (typeof p.sourcePly !== 'number') continue;
-      const list = map.get(p.sourcePly) ?? [];
-      list.push(p);
-      map.set(p.sourcePly, list);
-    }
-    return map;
-  }, [result]);
-
-  const selectedPuzzle = useMemo(
-    () => result?.puzzles.find((p) => p.id === selectedPuzzleId) ?? null,
-    [result, selectedPuzzleId],
-  );
-
-  // ── Solution arrow for the selected puzzle (green — distinct from the
-  // reviewer's own blue best-move arrow elsewhere in the app) ────────────────
+  // ── Best-move arrow while the live analysis replay runs. ──────────────────
   const arrows = useMemo((): [CbSquare, CbSquare, string][] => {
-    const uci = selectedPuzzle?.solutionUci;
-    if (!uci || uci.length < 4) return [];
-    return [[uci.slice(0, 2) as CbSquare, uci.slice(2, 4) as CbSquare, 'rgba(0,200,0,0.65)']];
-  }, [selectedPuzzle?.solutionUci]);
-
-  const customSquare = useQualityGlyphSquare(reviewer.currentMove);
-
-  const handleSelectPuzzle = useCallback((puzzle: Puzzle) => {
-    if (puzzle.sourcePly == null) return;
-    setSelectedPuzzleId(puzzle.id);
-    reviewer.goToMove(puzzle.kind === 'avoid-blunder' ? puzzle.sourcePly - 1 : puzzle.sourcePly);
-  }, [reviewer]);
-
-  const handleGenerate = async () => {
-    if (!reviewer.review) return;
-    setGenerating(true);
-    setGenError(null);
-    setResult(null);
-    setSelectedPuzzleId(null);
-    try {
-      setResult(await generatePuzzlesFromReview(reviewer.review, { severity, sourceGameId: undefined }));
-    } catch (e) {
-      setGenError(e instanceof Error ? e.message : 'Failed to generate puzzles');
-    } finally {
-      setGenerating(false);
+    if (liveMove?.bestUci && liveMove.bestUci.length >= 4) {
+      return [[liveMove.bestUci.slice(0, 2) as CbSquare, liveMove.bestUci.slice(2, 4) as CbSquare, 'rgba(0,120,255,0.55)']];
     }
-  };
+    return [];
+  }, [liveMove?.bestUci]);
+
+  const customSquare = useQualityGlyphSquare(previewFen ? null : (shownMove ?? null));
+
+  const handleSelectGameMove = useCallback((index: number) => {
+    clearPreview();
+    reviewer.goToMove(index);
+  }, [reviewer, clearPreview]);
+
+  const handleToggleExpand = useCallback((move: ReviewedMove) => {
+    setExpandedMoveIndex((cur) => {
+      const next = cur === move.moveIndex ? null : move.moveIndex;
+      if (next !== null) {
+        // Show the position to solve from, with the opponent's move that
+        // created it highlighted — same "what just happened" convention as
+        // Solve mode.
+        const prev = reviewer.review?.moves[move.moveIndex - 1];
+        const prevUci = prev ? playedMoveUci(prev.fenBefore, prev.moveSan) : undefined;
+        handlePreviewPosition(move.fenBefore, prevUci ? { from: prevUci.slice(0, 2), to: prevUci.slice(2, 4) } : null);
+      }
+      return next;
+    });
+  }, [reviewer.review, handlePreviewPosition]);
+
+  const draftedKeys = useMemo(() => new Set(draftMap.keys()), [draftMap]);
+
+  const handleToggleDraft = useCallback((move: ReviewedMove, variantIndex: 0 | 1, checked: boolean) => {
+    const key = `${move.moveIndex}:${variantIndex}`;
+    setDraftMap((prev) => {
+      const next = new Map(prev);
+      if (checked) {
+        const moves = reviewer.review?.moves;
+        const draft = moves ? buildDraftPuzzle(moves, move, variantIndex) : null;
+        if (draft) next.set(key, draft);
+      } else {
+        next.delete(key);
+      }
+      return next;
+    });
+  }, [reviewer.review]);
+
+  const draftPuzzles = useMemo(() => [...draftMap.values()], [draftMap]);
+
+  const handleRemoveDraft = useCallback((id: string) => {
+    setDraftMap((prev) => {
+      const next = new Map(prev);
+      for (const [key, p] of next) if (p.id === id) next.delete(key);
+      return next;
+    });
+  }, []);
+
+  const handleSaveBatch = useCallback(async (name: string, finalPuzzles: Puzzle[]) => {
+    const trimmed = name.trim() || `Workout — ${new Date().toLocaleDateString()}`;
+    await db.puzzles.bulkAdd(finalPuzzles);
+    await db.leitnerBoxes.bulkAdd(finalPuzzles.map((p) => ({
+      puzzleId: p.id, box: 0, lastSessionNum: 0, rightCount: 0, wrongCount: 0,
+    })));
+    await db.workoutSets.add({
+      id: nanoid(),
+      name: trimmed,
+      puzzleIds: finalPuzzles.map((p) => p.id),
+      createdAt: Date.now(),
+    });
+    setDraftMap(new Map());
+    setShowBatchModal(false);
+    setPuzzleMode(false);
+    setExpandedMoveIndex(null);
+    clearPreview();
+    setSavedMsg(`Saved "${trimmed}" — find it under Library → Workouts.`);
+    setTimeout(() => setSavedMsg(null), 5000);
+  }, [clearPreview]);
 
   // ── Nav state ──────────────────────────────────────────────────────────────
   const canPrev = reviewer.currentMoveIndex >= 0;
   const canNext = reviewer.review !== null && reviewer.currentMoveIndex < reviewer.review.moves.length - 1;
 
-  // ── Open the analysed game on the full Board (same enrichment as Game
-  // Reviewer, no extra per-move comments here) ───────────────────────────────
   const handleOpenInBoard = () => {
     const pgn = reviewer.originalPgn;
     if (!pgn) return;
@@ -243,21 +461,49 @@ export function PuzzleGeneratorShell({ initialPgn }: PuzzleGeneratorShellProps) 
     const goRaw = () => router.push(`/board?pgn=${encodeURIComponent(pgn)}`);
     if (!review) { goRaw(); return; }
     try {
-      const enriched = buildEnrichedPgn(pgn, review, reviewer.headers);
+      const enriched = buildEnrichedPgn(pgn, review, localHeaders);
       router.push(`/board?pgn=${encodeURIComponent(enriched)}`);
     } catch {
       goRaw();
     }
   };
 
-  if (!initialPgn) {
+  const handleDownload = () => {
+    const pgn = reviewer.originalPgn;
+    if (!pgn) return;
+    const blob = new Blob([pgn], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'game.pgn';
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  if (!reviewer.originalPgn) {
     return (
-      <div className="p-6 text-center text-zinc-400">
-        <h1 className="text-xl font-bold text-zinc-100 mb-2">Puzzle Generator</h1>
-        <p className="text-sm">
-          Open a game on the <Link href="/board" className="text-blue-400 underline">board</Link> and use
-          &ldquo;Send to Puzzle Generator&rdquo; from its menu.
+      <div className="max-w-xl mx-auto p-6 space-y-3">
+        <p className="text-sm text-zinc-400 text-center">
+          Paste a PGN below, or open a game on the <Link href="/board" className="text-blue-400 underline">board</Link> and
+          use &ldquo;Send to Game Analysis&rdquo; from its menu.
         </p>
+        <div className="flex gap-2 items-start">
+          <textarea
+            className="flex-1 p-2 rounded bg-zinc-800 border border-zinc-700 text-sm font-mono text-zinc-200 placeholder:text-zinc-600 resize-none focus:outline-none focus:border-zinc-500"
+            rows={4}
+            placeholder="Paste PGN here…"
+            value={pgnInput}
+            onChange={(e) => setPgnInput(e.target.value)}
+            spellCheck={false}
+          />
+          <button
+            className="px-4 py-2 rounded bg-blue-600 hover:bg-blue-500 disabled:opacity-40 disabled:cursor-not-allowed text-sm font-medium transition-colors whitespace-nowrap"
+            onClick={() => { if (pgnInput.trim()) reviewer.loadPgn(pgnInput.trim()); }}
+            disabled={reviewer.isLoading || !pgnInput.trim()}
+          >
+            {reviewer.isLoading ? 'Analysing…' : 'Analyse'}
+          </button>
+        </div>
         <DevConsole />
       </div>
     );
@@ -265,15 +511,13 @@ export function PuzzleGeneratorShell({ initialPgn }: PuzzleGeneratorShellProps) 
 
   return (
     <div className="flex flex-col gap-3 w-full">
-      <h1 className="text-xl font-bold text-zinc-100 px-1">Puzzle Generator</h1>
-
       <div className="flex flex-col lg:flex-row gap-3 lg:items-start">
         {/* Eval bar + board */}
         <div
           className="flex gap-px lg:gap-1.5 items-start shrink-0"
           style={{ width: 'min(100vw, 90vh, 560px)', maxWidth: '100%' }}
         >
-          {boardWidth > 0 && <EvalBar score={reviewer.currentEval} height={boardWidth} />}
+          {boardWidth > 0 && <EvalBar score={barEval} height={boardWidth} />}
           <div
             ref={containerRef}
             className="flex-1 min-w-0"
@@ -282,7 +526,7 @@ export function PuzzleGeneratorShell({ initialPgn }: PuzzleGeneratorShellProps) 
           >
             {boardWidth > 0 && (
               <Chessboard
-                position={reviewer.currentFen}
+                position={boardFen}
                 boardWidth={boardWidth}
                 boardOrientation={flipped ? 'black' : 'white'}
                 arePiecesDraggable={false}
@@ -310,42 +554,36 @@ export function PuzzleGeneratorShell({ initialPgn }: PuzzleGeneratorShellProps) 
               canNext={canNext}
               onOpenInBoard={handleOpenInBoard}
               canOpenInBoard={!!reviewer.originalPgn}
+              onOpenReport={() => setShowReport(true)}
+              canOpenReport={!!reviewer.review}
+              onShowGameInfo={() => setShowGameInfo(true)}
+              onDownload={handleDownload}
+              onToggleGenerate={() => {
+                setPuzzleMode((v) => !v);
+                setExpandedMoveIndex(null);
+                clearPreview();
+              }}
+              puzzleMode={puzzleMode}
+              canGenerate={!!reviewer.review}
             />
           </div>
 
-          {/* Severity + Generate — kept OUTSIDE the scrollable move list below,
-              so paging through moves (which auto-scrolls to the active move)
-              never pushes these controls out of view. */}
-          {reviewer.review && !reviewer.isLoading && (
+          {/* Confirm bar — visible whenever there's a draft to review, placed
+              OUTSIDE the scrollable move list so it never scrolls out of view. */}
+          {draftPuzzles.length > 0 && (
             <div className="order-2 lg:order-1 shrink-0 px-1">
-              <div className="flex flex-wrap items-center gap-2">
-                <label className="text-sm text-zinc-400" htmlFor="severity">Extract from:</label>
-                <select
-                  id="severity"
-                  value={severity}
-                  onChange={(e) => setSeverity(e.target.value as BlunderSeverityFilter)}
-                  className="bg-zinc-800 border border-zinc-600 rounded px-2 py-1 text-sm text-zinc-100"
-                >
-                  {SEVERITY_OPTIONS.map((o) => (
-                    <option key={o.value} value={o.value}>{o.label}</option>
-                  ))}
-                </select>
-                <button
-                  onClick={handleGenerate}
-                  disabled={generating}
-                  className="px-3 py-1.5 rounded text-sm bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-semibold"
-                >
-                  {generating ? 'Generating…' : 'Generate Puzzles'}
-                </button>
-              </div>
-              {genError && <p className="text-sm text-red-400 mt-1.5">{genError}</p>}
-              {result && (
-                <p className="text-xs text-zinc-500 mt-1.5">
-                  {result.puzzles.length} puzzle{result.puzzles.length === 1 ? '' : 's'} generated from{' '}
-                  {result.flaggedMoveCount} flagged move{result.flaggedMoveCount === 1 ? '' : 's'}
-                  {result.puzzles.length === 0 && ' — no moves matched that severity filter.'}
-                </p>
-              )}
+              <button
+                onClick={() => setShowBatchModal(true)}
+                className="w-full px-3 py-2 rounded text-sm bg-emerald-600 hover:bg-emerald-500 text-white font-semibold"
+              >
+                Confirm ({draftPuzzles.length})
+              </button>
+              {savedMsg && <p className="text-xs text-emerald-400 mt-1">{savedMsg}</p>}
+            </div>
+          )}
+          {draftPuzzles.length === 0 && savedMsg && (
+            <div className="order-2 lg:order-1 shrink-0 px-1">
+              <p className="text-xs text-emerald-400">{savedMsg}</p>
             </div>
           )}
 
@@ -390,10 +628,13 @@ export function PuzzleGeneratorShell({ initialPgn }: PuzzleGeneratorShellProps) 
               <PuzzleMoveList
                 moves={reviewer.review.moves}
                 currentMoveIndex={reviewer.currentMoveIndex}
-                onSelectMove={reviewer.goToMove}
-                puzzlesByMoveIndex={puzzlesByMoveIndex}
-                selectedPuzzleId={selectedPuzzleId}
-                onSelectPuzzle={handleSelectPuzzle}
+                onSelectMove={handleSelectGameMove}
+                puzzleMode={puzzleMode}
+                expandedMoveIndex={expandedMoveIndex}
+                onToggleExpand={handleToggleExpand}
+                draftedKeys={draftedKeys}
+                onToggleDraft={handleToggleDraft}
+                onPreview={handlePreviewPosition}
               />
             ) : (
               <p className="text-zinc-500 text-xs px-1 py-2">Loading game…</p>
@@ -406,9 +647,57 @@ export function PuzzleGeneratorShell({ initialPgn }: PuzzleGeneratorShellProps) 
         <AnalysisModal
           progress={reviewer.progress}
           logs={reviewer.logs}
+          moveEvents={reviewer.moveEvents}
+          startedAt={reviewer.analysisStartedAt}
           onHide={() => setHideAnalysisModal(true)}
         />
       )}
+
+      {showReport && reviewer.review && (
+        <ReportModal
+          review={reviewer.review}
+          originalPgn={reviewer.originalPgn ?? ''}
+          currentMoveIndex={reviewer.currentMoveIndex}
+          onSelectMove={handleSelectGameMove}
+          onClose={() => setShowReport(false)}
+        />
+      )}
+
+      {showGameInfo && (
+        <GameInfoModal
+          headers={localHeaders}
+          onSetHeader={handleSetHeader}
+          onClose={() => setShowGameInfo(false)}
+        />
+      )}
+
+      {showBatchModal && (
+        <PuzzleBatchModal
+          puzzles={draftPuzzles}
+          onPreview={handlePreviewPosition}
+          onRemove={handleRemoveDraft}
+          onClose={() => setShowBatchModal(false)}
+          onSave={handleSaveBatch}
+        />
+      )}
+
+      <div className="flex gap-2 items-start">
+        <textarea
+          className="flex-1 p-2 rounded bg-zinc-800 border border-zinc-700 text-sm font-mono text-zinc-200 placeholder:text-zinc-600 resize-none focus:outline-none focus:border-zinc-500"
+          rows={3}
+          placeholder="Paste PGN here…"
+          value={pgnInput}
+          onChange={(e) => setPgnInput(e.target.value)}
+          spellCheck={false}
+        />
+        <button
+          className="px-4 py-2 rounded bg-blue-600 hover:bg-blue-500 disabled:opacity-40 disabled:cursor-not-allowed text-sm font-medium transition-colors whitespace-nowrap"
+          onClick={() => { if (pgnInput.trim()) reviewer.loadPgn(pgnInput.trim()); }}
+          disabled={reviewer.isLoading || !pgnInput.trim()}
+        >
+          {reviewer.isLoading ? 'Analysing…' : 'Analyse'}
+        </button>
+      </div>
 
       <DevConsole />
     </div>
